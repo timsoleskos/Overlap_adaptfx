@@ -85,16 +85,21 @@ def get_state_space(distribution):
 
     Parameters
     ----------
-    distribution : frozen function
-        normal distribution
+    distribution : frozen function or tuple(float, float)
+        normal distribution or (mean, std) parameters of a normal distribution
 
     Returns
     -------
     state_space: Array spanning from the 2% percentile to the 98% percentile with a normalized spacing to define 100 states
         np.array
     """
-    lower_bound = distribution.ppf(0.001)
-    upper_bound = distribution.ppf(0.999)
+    if hasattr(distribution, "ppf"):
+        lower_bound = distribution.ppf(0.001)
+        upper_bound = distribution.ppf(0.999)
+    else:
+        mean_volume, std_volume = distribution
+        lower_bound = norm.ppf(0.001, loc=mean_volume, scale=std_volume)
+        upper_bound = norm.ppf(0.999, loc=mean_volume, scale=std_volume)
 
     return np.linspace(lower_bound,upper_bound,200)
 
@@ -104,8 +109,8 @@ def probdist(X,state_space):
 
     Parameters
     ----------
-    X : scipy.stats._distn_infrastructure.rv_frozen
-        distribution function.
+    X : scipy.stats._distn_infrastructure.rv_frozen or tuple(float, float)
+        distribution function or (mean, std) parameters of a normal distribution.
 
     Returns
     -------
@@ -116,7 +121,11 @@ def probdist(X,state_space):
     spacing = state_space[1]-state_space[0]
     upper_bounds = state_space + spacing/2
     lower_bounds = state_space - spacing/2
-    prob = X.cdf(upper_bounds) - X.cdf(lower_bounds)
+    if hasattr(X, "cdf"):
+        prob = X.cdf(upper_bounds) - X.cdf(lower_bounds)
+    else:
+        mean_volume, std_volume = X
+        prob = norm.cdf(upper_bounds, loc=mean_volume, scale=std_volume) - norm.cdf(lower_bounds, loc=mean_volume, scale=std_volume)
     return np.array(prob) #note: this will only add up to roughly 96% instead of 100%
 
 def penalty_calc_single(physical_dose, min_dose, actual_volume, intercept=INTERCEPT, slope=SLOPE):
