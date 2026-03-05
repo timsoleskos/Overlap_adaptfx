@@ -54,11 +54,11 @@ def policy_calc(fixed_mean_volume: float, fixed_std: float, number_of_fractions:
 
     mean_volume = fixed_mean_volume
     std_volume = fixed_std
-    distribution_params = (mean_volume, std_volume)
+    distribution_params = (mean_volume, std_volume)  # Keep as (mean, std) to avoid creating a frozen scipy distribution object (expensive in tight loops).
     accumulated_dose = 0
     minimum_future = accumulated_dose + min_dose 
     
-    volume_space = get_state_space(distribution_params)
+    volume_space = get_state_space(distribution_params)  # Helper expects (mean, std) tuple parameters.
     probabilities = probdist(distribution_params,volume_space) #produce probabilities of the respective volumes
     volume_space = volume_space.clip(0) #clip the volume space to 0cc as negative volumes do not exist
     dose_space = np.arange(minimum_future,goal, dose_steps) #spans the dose space delivered to the tumor

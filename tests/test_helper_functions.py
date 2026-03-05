@@ -14,7 +14,6 @@ The tests verify:
 
 import pytest
 import numpy as np
-from scipy.stats import norm
 from adaptive_fractionation_overlap.helper_functions import (
     data_fit,
     hyperparam_fit,
@@ -201,7 +200,7 @@ class TestProbdist:
     
     def test_probdist_basic(self):
         """Test basic probability distribution calculation."""
-        X = norm(loc=3.0, scale=1.0)
+        X = (3.0, 1.0)
         state_space = np.linspace(0, 6, 21)
         
         result = probdist(X, state_space)
@@ -215,7 +214,7 @@ class TestProbdist:
     
     def test_probdist_properties(self):
         """Test mathematical properties of probability distribution."""
-        X = norm(loc=5.0, scale=1.5)
+        X = (5.0, 1.5)
         state_space = np.linspace(0, 10, 51)
         
         result = probdist(X, state_space)
@@ -346,7 +345,7 @@ class TestHelperFunctionsIntegration:
         for patient_overlaps in evaluation_patient_data['overlaps']:
             volumes = np.array(patient_overlaps)
             std_val = std_calc(volumes, DEFAULT_ALPHA, DEFAULT_BETA)
-            distribution = norm(loc=volumes.mean(), scale=std_val)
+            distribution = (volumes.mean(), std_val)
             
             state_space = get_state_space(distribution)
             
@@ -384,15 +383,15 @@ class TestHelperFunctionsEdgeCases:
         assert np.isfinite(result), "Should return finite result"
     
     def test_get_state_space_extreme_distribution(self):
-        """Test state space with extreme distribution parameters."""
+        """Test state space with extreme distribution parameter tuples."""
         # Very small scale
-        small_scale_dist = norm(loc=2.0, scale=0.01)
+        small_scale_dist = (2.0, 0.01)
         result_small = get_state_space(small_scale_dist)
         
         assert len(result_small) > 0, "Should generate state space for small scale"
         
         # Very large scale
-        large_scale_dist = norm(loc=2.0, scale=10.0)
+        large_scale_dist = (2.0, 10.0)
         result_large = get_state_space(large_scale_dist)
         
         assert len(result_large) > 0, "Should generate state space for large scale"
