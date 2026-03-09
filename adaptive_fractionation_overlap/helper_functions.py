@@ -280,6 +280,25 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
 
     return fig
 
+def _linear_interp(x_values: np.ndarray, y_values: np.ndarray, query_points):
+    """Fast linear interpolation for 1D/2D query arrays."""
+    query = np.asarray(query_points)
+    return np.interp(query.ravel(), x_values, y_values).reshape(query.shape)
+
+
+def _nearest_idx(values, grid):
+    """Return nearest-grid-point indices for every element in *values*.
+
+    Uses searchsorted (O(n log G)) instead of argmin (O(n*G)), so it scales
+    well when the grid is large.  *grid* must be sorted ascending.
+    """
+    flat = np.asarray(values).ravel()
+    hi = np.searchsorted(grid, flat, side='left').clip(1, len(grid) - 1)
+    lo = hi - 1
+    idx = np.where(flat - grid[lo] <= grid[hi] - flat, lo, hi)
+    return idx.reshape(np.asarray(values).shape)
+
+
 def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed_dose: float, min_dose: float, max_dose: float = None) -> float:
     """
     This function calculates the minimal dose that needs to be delivered in the current fraction to still reach the goal
