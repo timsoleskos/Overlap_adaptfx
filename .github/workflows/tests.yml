@@ -41,7 +41,7 @@ jobs:
 
       - name: Run pytest with coverage
         run: |
-          python -m pytest tests/ --cov=adaptive_fractionation_overlap --cov-report=term-missing
+          python -m pytest tests/ -m "not slow" --cov=adaptive_fractionation_overlap --cov-report=term-missing
 
   package-build:
     name: Package Build

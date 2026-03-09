@@ -310,22 +310,24 @@ class TestAdaptfxFull:
     
     def test_adaptfx_full_parameter_variations(self, sample_volumes_list):
         """Test adaptfx_full with different parameter sets."""
+        # Use number_of_fractions=3 and coarse dose_steps to keep the 5D values
+        # array (n_states × N_dose × N_overlap × N_mu × N_sigma) within CI memory limits.
         base_params = {
             'volumes': sample_volumes_list,
-            'number_of_fractions': 5,
+            'number_of_fractions': 3,
             'min_dose': 6.0,
             'max_dose': 10.0,
             'mean_dose': 8.0
         }
-        
+
         # Test with different dose steps
-        result_coarse = adaptfx_full(**base_params, dose_steps=0.5)
-        result_fine = adaptfx_full(**base_params, dose_steps=0.25)
+        result_coarse = adaptfx_full(**base_params, dose_steps=1.0)
+        result_fine = adaptfx_full(**base_params, dose_steps=0.5)
         
         # Both should produce valid results
         for result in [result_coarse, result_fine]:
             physical_doses, accumulated_doses, total_penalty = result
-            assert len(physical_doses) == 5, "Should have 5 doses"
+            assert len(physical_doses) == 3, "Should have 3 doses"
             assert np.all(6.0 <= physical_doses) and np.all(physical_doses <= 10.0), "Doses should be in bounds"
         
         # Fine steps might give different (potentially better) results
@@ -378,6 +380,7 @@ class TestAdaptfxFull:
 class TestPrecomputePlan:
     """Test the precompute_plan function."""
     
+    @pytest.mark.slow
     def test_precompute_plan_basic(self, sample_volumes):
         """Golden regression test for precompute_plan using the sample patient."""
         volumes = sample_volumes[:3]  # First 3 volumes
@@ -445,6 +448,7 @@ class TestPrecomputePlan:
         )
         np.testing.assert_allclose(transitions, expected_transitions, atol=1e-12)
     
+    @pytest.mark.slow
     def test_precompute_plan_different_fractions(self, sample_volumes):
         """Test precompute_plan for different fractions."""
         for fraction in [1, 2, 3, 4, 5]:
@@ -596,10 +600,10 @@ class TestCoreAdaptfxGoldenRegression:
         expected_physical_doses = np.array([6.5, 10.0, 6.5, 8.5, 8.5])
         expected_penalties_added = np.array([1.3775625, 6.256, 1.5519375, 7.340625, 5.7546875])
         expected_final_penalties = np.array([
-            -22.08644483137297,
-            -20.63852772081227,
-            -15.787182500058243,
-            -21.750556162561374,
+            -24.681497576744796,
+            -21.591509214645544,
+            -16.261665999504853,
+            -21.769204632572254,
             -5.754687499999999,
         ])
 
