@@ -45,14 +45,16 @@ _MU_GRID = np.unique(np.concatenate([
 # Non-uniform sigma grid: fine resolution in [0, 0.7] cc where 75% of patients fall,
 # coarser in the tail.  Range extended to 3.5 cc to avoid clipping outlier patients
 # (observed max σ ≈ 3.3 cc on the 58-patient cohort).
-# Segment 1 [0.05, 0.70]  15 pts  step ~0.046 cc  (p0–p75 of clinical σ)
-# Segment 2 [0.80, 1.80]   8 pts  step ~0.143 cc  (p75–p90)
-# Segment 3 [2.00, 3.50]   7 pts  step ~0.250 cc  (tail)
+# Segment 1 [0.05, 0.70]   5 pts  step ~0.163 cc  (p0–p75 of clinical σ)
+# Segment 2 [0.80, 1.80]   3 pts  step ~0.500 cc  (p75–p90)
+# Segment 3 [2.00, 3.50]   2 pts  step ~1.500 cc  (tail)
+# Reduced from 30 → 10 pts to keep values array within CI memory limits at 441 overlap bins.
+# Peak memory: (4, 70, 441, 280, 10) × 8 bytes ≈ 2.75 GB < 7 GB GitHub Actions runner.
 _SIGMA_GRID = np.unique(np.concatenate([
-    np.linspace(0.05, 0.7, 15),
-    np.linspace(0.8,  1.8,  8),
-    np.linspace(2.0,  3.5,  7),
-]))  # 30 grid points total
+    np.linspace(0.05, 0.7, 5),
+    np.linspace(0.8,  1.8, 3),
+    np.linspace(2.0,  3.5, 2),
+]))  # 10 grid points total
 _SIGMA_MIN = float(_SIGMA_GRID[0])
 
 # Fixed wide overlap state space for the DP: must cover the full belief grid range so
@@ -61,7 +63,7 @@ _SIGMA_MIN = float(_SIGMA_GRID[0])
 # (e.g. spacing=0 when many negative linspace values are clipped to 0), and—crucially—
 # the narrow range fails to represent future overlap outcomes for beliefs far from the
 # patient's current distribution, corrupting the DP.
-_VOLUME_SPACE = np.linspace(0.0, _MU_GRID[-1] + 4 * _SIGMA_GRID[-1], 200)
+_VOLUME_SPACE = np.linspace(0.0, _MU_GRID[-1] + 4 * _SIGMA_GRID[-1], 441)  # 0.1 cc steps
 
 # Precompute branch probabilities once at module load (all inputs are module-level constants).
 # p_belief[mi, si, j] = P(overlap bin j | belief (mu_grid[mi], sigma_grid[si]))
