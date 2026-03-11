@@ -13,7 +13,7 @@ from .constants import SLOPE, INTERCEPT
 def std_calc(measured_data, alpha, beta):
     """
     calculates the most likely standard deviation for a list of k overlap volumes and a gamma prior
-    measured_data: list/array with k sparing factors
+    measured_data: list/array with k overlap volumes
 
     Parameters
     ----------
@@ -22,7 +22,7 @@ def std_calc(measured_data, alpha, beta):
     alpha : float
         shape of gamma distribution
     beta : float
-        scale of gamma distrinbution
+        scale of gamma distribution
 
     Returns
     -------
@@ -55,7 +55,7 @@ def get_state_space(distribution):
 
     Returns
     -------
-    state_space: Array spanning from the 2% percentile to the 98% percentile with a normalized spacing to define 100 states
+    state_space: Array spanning from the 0.1% percentile to the 99.9% percentile with a normalized spacing to define 200 states
         np.array
     """
     mean_volume, std_volume = distribution
@@ -76,7 +76,7 @@ def probdist(X,state_space):
     Returns
     -------
     prob : np.array
-        array with probabilities for each sparing factor.
+        array with probabilities for each overlap volume.
 
     """
     spacing = state_space[1]-state_space[0]
@@ -84,7 +84,7 @@ def probdist(X,state_space):
     lower_bounds = state_space - spacing/2
     mean_volume, std_volume = X
     prob = norm.cdf(upper_bounds, loc=mean_volume, scale=std_volume) - norm.cdf(lower_bounds, loc=mean_volume, scale=std_volume)
-    return np.array(prob) #note: this will only add up to roughly 96% instead of 100%
+    return prob #note: sum depends on how much of the distribution falls within state_space
 
 def penalty_calc_single(physical_dose, min_dose, actual_volume, intercept=INTERCEPT, slope=SLOPE):
     """
@@ -174,8 +174,8 @@ def max_action(accumulated_dose, dose_space, goal):
         gives the size of the resized actionspace to reach the prescribed tumor dose.
 
     """
-    max_action = min(max(dose_space), goal - accumulated_dose)
-    sizer = np.argmin(np.abs(dose_space - max_action))
+    max_deliverable = min(max(dose_space), goal - accumulated_dose)
+    sizer = np.argmin(np.abs(dose_space - max_deliverable))
     sizer = 1 if sizer == 0 else sizer #Make sure that at least the minimum dose is delivered
     return sizer
 
@@ -219,6 +219,7 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
     Returns:
         matplotlib.fig: returns a figure with all values plotted as subfigures
     """
+    values = values.copy()
     values[values < -10000000000] = 10000000000
     min_Value = np.min(values)
     values[values == 10000000000] = 1.1*min_Value
@@ -245,7 +246,7 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
 
     return fig
 
-def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed_dose: float, min_dose: float, max_dose: float = None) -> float:
+def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed_dose: float, min_dose: float, max_dose: float) -> float:
     """
     This function calculates the minimal dose that needs to be delivered in the current fraction to still reach the goal
 
@@ -257,8 +258,8 @@ def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed
         number of fractions left including the current one
     min_dose : float
         minimal dose that can be delivered in one fraction
-    max_dose : float, optional
-        maximal dose that can be delivered in one fraction, by default None
+    max_dose : float
+        maximal dose that can be delivered in one fraction
 
     Returns
     -------
