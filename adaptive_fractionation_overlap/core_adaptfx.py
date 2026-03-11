@@ -30,8 +30,8 @@ from .helper_functions import (
     penalty_calc_single,
     penalty_calc_matrix,
     min_dose_to_deliver,
-    _linear_interp,
-    _nearest_idx,
+    linear_interp,
+    nearest_idx,
 )
 
 
@@ -102,8 +102,8 @@ def _belief_update_1d(mu, sigma, volume_space, n_t):
     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))
     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])
     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])
-    next_mi = _nearest_idx(mu_prime, _MU_GRID)
-    next_si = _nearest_idx(sigma_prime, _SIGMA_GRID)
+    next_mi = nearest_idx(mu_prime, _MU_GRID)
+    next_si = nearest_idx(sigma_prime, _SIGMA_GRID)
     return next_mi, next_si
 
 
@@ -172,7 +172,7 @@ def policy_calc(fixed_mean_volume: float, fixed_std: float, number_of_fractions:
             if (state == number_of_fractions - 1):  # first fraction with no prior dose delivered so we dont loop through dose_space
                 overlap_penalty = penalty_calc_matrix(delivered_doses, volume_space, min_dose) #This means only values over min_dose get a penalty. Values below min_dose do not get a reward
                 future_value_prob = (values[state - 1] * probabilities).sum(axis=1)
-                future_values = _linear_interp(dose_space, future_value_prob, delivered_doses)  # for each action and sparing factor calculate the penalty of the action and add the future value we will only have as many future values as we have actions
+                future_values = linear_interp(dose_space, future_value_prob, delivered_doses)  # for each action and sparing factor calculate the penalty of the action and add the future value we will only have as many future values as we have actions
                 values_actual_frac = -overlap_penalty + future_values
                 policies_overlap = delivered_doses[values_actual_frac.argmax(axis = 1)]
             else: #any fraction that is not the actual one
@@ -187,7 +187,7 @@ def policy_calc(fixed_mean_volume: float, fixed_std: float, number_of_fractions:
                     future_doses = dose_space.reshape(-1, 1) + delivered_doses.reshape(1, -1)
                     overdosed = future_doses > goal
                     future_doses = np.where(overdosed, bound, future_doses) #all overdosing doses are set to the penalty state
-                    future_values = _linear_interp(dose_space, future_value_prob, future_doses)  # for each action and sparing factor calculate the penalty of the action and add the future value we will only have as many future values as we have actions (not sparing dependent)
+                    future_values = linear_interp(dose_space, future_value_prob, future_doses)  # for each action and sparing factor calculate the penalty of the action and add the future value we will only have as many future values as we have actions (not sparing dependent)
                     penalties = np.zeros(future_doses.shape)
                     penalties[overdosed] = -1000000000000
                     vs = -overlap_penalty.T.reshape(1, delivered_doses.size, len(volume_space)) + future_values.reshape(len(dose_space), delivered_doses.size, 1) + penalties.reshape(len(dose_space), delivered_doses.size, 1)
@@ -293,7 +293,7 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                 future_value_prob = _future_value_1d(
                     values[state - 1], volume_space, initial_probs, mu_start, sigma_start, n_t
                 )
-                future_values = _linear_interp(dose_space, future_value_prob, delivered_doses)
+                future_values = linear_interp(dose_space, future_value_prob, delivered_doses)
                 values_actual_frac = -overlap_penalty + future_values
                 policies_overlap = delivered_doses[values_actual_frac.argmax(axis=1)]
                 actual_value = -actual_penalty + future_values
@@ -311,7 +311,7 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                 future_value_prob = _future_value_1d(
                     values[state - 1], volume_space, initial_probs, mu_start, sigma_start, n_t
                 )
-                future_values = _linear_interp(dose_space, future_value_prob, future_doses)
+                future_values = linear_interp(dose_space, future_value_prob, future_doses)
                 values_actual_frac = -overlap_penalty + future_values + penalties
                 policies_overlap = delivered_doses_clipped[values_actual_frac.argmax(axis=1)]
                 actual_value = -actual_penalty + future_values + penalties
@@ -346,8 +346,8 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])
                     # Nearest grid indices — shape (N_mu, N_sigma, N_overlap)
                     # searchsorted is O(N*log(G)) vs argmin's O(N*G), ~35x faster for G=280.
-                    next_mi = _nearest_idx(mu_prime, _MU_GRID)
-                    next_si = _nearest_idx(sigma_prime, _SIGMA_GRID)
+                    next_mi = nearest_idx(mu_prime, _MU_GRID)
+                    next_si = nearest_idx(sigma_prime, _SIGMA_GRID)
 
                     # Steps 2+3: accumulate weighted future values in a j-loop.
                     # This avoids materialising the full (N_dose, N_mu, N_sigma, N_overlap) = ~150 MB

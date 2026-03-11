@@ -260,13 +260,13 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
 
     return fig
 
-def _linear_interp(x_values: np.ndarray, y_values: np.ndarray, query_points):
+def linear_interp(x_values: np.ndarray, y_values: np.ndarray, query_points):
     """Fast linear interpolation for 1D/2D query arrays."""
     query = np.asarray(query_points)
     return np.interp(query.ravel(), x_values, y_values).reshape(query.shape)
 
 
-def _nearest_idx(values, grid):
+def nearest_idx(values, grid):
     """Return nearest-grid-point indices for every element in *values*.
 
     Uses searchsorted (O(n log G)) instead of argmin (O(n*G)), so it scales
