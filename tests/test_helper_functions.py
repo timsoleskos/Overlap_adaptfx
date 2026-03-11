@@ -15,8 +15,6 @@ The tests verify:
 import pytest
 import numpy as np
 from adaptive_fractionation_overlap.helper_functions import (
-    data_fit,
-    hyperparam_fit,
     std_calc,
     get_state_space,
     probdist,
@@ -235,41 +233,6 @@ class TestProbdist:
         
         assert left_increasing or len(left_side) <= 1, "Left side should be non-decreasing"
         assert right_decreasing or len(right_side) <= 1, "Right side should be non-increasing"
-
-
-class TestDataFittingFunctions:
-    """Test data fitting and hyperparameter functions."""
-    
-    def test_data_fit_basic(self, sample_volumes):
-        """Test basic data fitting."""
-        result = data_fit(sample_volumes)
-        
-        # data_fit returns a scipy distribution object, not parameters
-        assert hasattr(result, 'pdf'), "Result should be a distribution with pdf method"
-        assert hasattr(result, 'mean'), "Result should be a distribution with mean method"
-        
-        # Should be able to compute basic statistics
-        try:
-            mean_val = result.mean()
-            assert np.isfinite(mean_val), "Mean should be finite"
-        except Exception as e:
-            pytest.fail(f"Failed to compute mean: {e}")
-    
-    def test_hyperparam_fit_basic(self, evaluation_patient_data):
-        """Test hyperparameter fitting."""
-        # hyperparam_fit expects 2D data (patients × measurements)
-        patient_data = np.array(evaluation_patient_data['overlaps'])  # 3 patients × 6 measurements
-        
-        result = hyperparam_fit(patient_data)
-        
-        # Should return hyperparameters
-        assert isinstance(result, (tuple, list, np.ndarray)), "Result should be a sequence"
-        assert len(result) == 2, "Should return exactly 2 hyperparameters (alpha, beta)"
-        
-        # Hyperparameters should be positive for gamma distribution
-        alpha, beta = result
-        assert alpha > 0, f"Alpha {alpha} should be positive"
-        assert beta > 0, f"Beta {beta} should be positive"
 
 
 class TestPlottingFunctions:

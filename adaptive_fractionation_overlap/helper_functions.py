@@ -4,46 +4,11 @@ In this file are all helper functions that are needed for the adaptive fractiona
 """
 
 import numpy as np
-from scipy.stats import norm, gamma
+from scipy.stats import norm
 import matplotlib.pyplot as plt
 from .constants import SLOPE, INTERCEPT
 
 
-
-def data_fit(data):
-    """
-    This function fits a normal distribution for the given data
-
-    Parameters
-    ----------
-    data : array or list
-        list with n elements for each observed overlap volume
-
-    Returns
-    -------
-    frozen function
-        normal distribution
-    """
-    mu, std = norm.fit(data)
-    return norm(loc = mu, scale = std)
-
-def hyperparam_fit(data):
-    """
-    This function fits the alpha and beta value for the prior
-
-    Parameters
-    ----------
-    data : array
-        a nxk matrix with n the amount of patints and k the amount of sparing factors per patient.
-
-    Returns
-    -------
-    list
-        alpha and beta hyperparameter.
-    """
-    vars = data.var(axis=1)
-    alpha, loc, beta = gamma.fit(vars, floc=0)
-    return [alpha, beta]
 
 def std_calc(measured_data, alpha, beta):
     """
