@@ -85,12 +85,12 @@ def build_input_summary(
     return ("\n".join(lines)).encode("utf-8")
 
 @st.cache_data
-def build_precompute_zip(csv_bytes, input_summary_bytes):
+def build_precompute_zip(csv_bytes, input_summary_bytes, fraction):
     """Bundle precompute outputs into a single zip file."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("precomputed_plans.csv", csv_bytes)
-        zf.writestr(f"Fraction_{actual_fraction}_summary.txt", input_summary_bytes)
+        zf.writestr(f"Fraction_{fraction}_summary.txt", input_summary_bytes)
     return buffer.getvalue()
 
 
@@ -151,7 +151,7 @@ if st.button('compute optimal dose', help = 'takes the given inputs from above t
             intercept=INTERCEPT,
             volume_x_dose=volume_x_dose
         )
-        zip_bytes = build_precompute_zip(csv, input_summary)
+        zip_bytes = build_precompute_zip(csv, input_summary, int(actual_fraction))
         left2, right2 = st.columns(2)  
         with left2:
             st.dataframe(data = volume_x_dose,height = 600, hide_index = True)
