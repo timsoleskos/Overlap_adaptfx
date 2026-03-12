@@ -99,7 +99,7 @@ def _precompute_branch_probabilities():
 _P_BELIEF = _precompute_branch_probabilities()  # shape: (N_mu, N_sigma, N_overlap), computed once at module load
 
 
-def _hypothetical_belief_grid_indices(mu, sigma, volume_space, n_t):
+def _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count):
     """For each hypothetical next overlap in volume_space, compute where the updated
     belief (mu, sigma) would land on the (_MU_GRID, _SIGMA_GRID) grid.
 
@@ -107,8 +107,8 @@ def _hypothetical_belief_grid_indices(mu, sigma, volume_space, n_t):
     _SIGMA_GRID, used to look up future values in the DP values array.
     Uses Welford's online algorithm to update the running mean and variance.
     """
-    mu_prime = (n_t * mu + volume_space) / (n_t + 1)  # new mean after observing each hypothetical overlap
-    sigma2_prime = (n_t * sigma ** 2 + (volume_space - mu) * (volume_space - mu_prime)) / (n_t + 1)  # new variance after observing each hypothetical overlap
+    mu_prime = (observation_count * mu + volume_space) / (observation_count + 1)  # new mean after observing each hypothetical overlap
+    sigma2_prime = (observation_count * sigma ** 2 + (volume_space - mu) * (volume_space - mu_prime)) / (observation_count + 1)  # new variance after observing each hypothetical overlap
     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))  # new sigma, clamped to avoid zero with few observations
     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])          # clamp new mu to grid's range
     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])  # clamp new sigma to grid's range
@@ -117,7 +117,7 @@ def _hypothetical_belief_grid_indices(mu, sigma, volume_space, n_t):
     return next_mi, next_si  # indices rather than values so callers can directly index into the DP values array
 
 
-def _bellman_expectation(values_prev, volume_space, p_branch, mu, sigma, n_t):
+def _bellman_expectation(values_prev, volume_space, p_branch, mu, sigma, observation_count):
     """Bellman expectation over all hypothetical next overlaps for a single belief (mu, sigma).
 
     Sums future values weighted by branch probabilities:
@@ -127,7 +127,7 @@ def _bellman_expectation(values_prev, volume_space, p_branch, mu, sigma, n_t):
     p_branch:    (N_overlap,) probability of each next overlap under current belief
     Returns:     (N_dose,) expected future value for each accumulated dose state
     """
-    next_mi, next_si = _hypothetical_belief_grid_indices(mu, sigma, volume_space, n_t) # If overlap was j, where would the belief (mu, sigma) land on the grid?
+    next_mi, next_si = _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count) # If overlap was j, where would the belief (mu, sigma) land on the grid?
     branch_vals = values_prev[:, np.arange(len(volume_space)), next_mi, next_si]  # Value function of the next belief state
     return (branch_vals * p_branch[None, :]).sum(axis=1) # Probability-weighed sum of next states' value functions
 
@@ -225,75 +225,35 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
     N_dose = len(dose_space)
 
     remaining_ptv_dose = prescribed_dose - accumulated_dose
-    remaining_fractions = number_of_fractions + 1 - fraction
+    remaining_fractions = number_of_fractions - fraction + 1
 
     # --- Value Function and Policy Tables (5D: one entry per future fraction) ---
     values = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))    # V(s): DP Value Function over all future states; axes: (fraction_index, accumulated_dose, overlap, belief_mu, belief_sigma)
     policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))  # π(s): optimal Dose Action for each future state; axes: (fraction_index, accumulated_dose, overlap, belief_mu, belief_sigma)
     current_fraction_policy = np.zeros(N_overlap)  # optimal dose for the current fraction, as a function of current overlap (will be populated below)
 
-    if remaining_ptv_dose < remaining_fractions * min_dose:  # overshoot unavoidable (prescribed dose will be exceeded); deliver min_dose.
+    if remaining_ptv_dose < remaining_fractions * min_dose:  # if overshoot is unavoidable (prescribed dose will be exceeded), then deliver min_dose.
         actual_policy = min_dose
-        current_fraction_policy, actual_value = _set_infeasible_state(actual_policy, values, N_overlap, remaining_fractions)
-    elif remaining_ptv_dose > remaining_fractions * max_dose:  # underdose unavoidable (prescribed dose unreachable); deliver max_dose.
+        current_fraction_policy, actual_value = _set_infeasible_state(actual_policy, values, N_overlap, remaining_fractions)  # skip DP: plan is infeasible regardless of overlap
+    elif remaining_ptv_dose > remaining_fractions * max_dose:  # if underdose is unavoidable (prescribed dose unreachable), then deliver max_dose.
         actual_policy = max_dose
-        current_fraction_policy, actual_value = _set_infeasible_state(actual_policy, values, N_overlap, remaining_fractions)
+        current_fraction_policy, actual_value = _set_infeasible_state(actual_policy, values, N_overlap, remaining_fractions)  # skip DP: plan is infeasible regardless of overlap
     else:
         min_float = np.finfo(np.float64).min
-        for state, fraction_state in enumerate(np.arange(number_of_fractions, fraction - 1, -1)):
-            n_t = int(fraction_state)
+        for state, fraction_state in enumerate(np.arange(number_of_fractions, fraction - 1, -1)):  # backward iteration (starting from last treatment fraction, ending at today's fraction)
+            observation_count = int(fraction_state)  # number of observed overlaps, before the state being evaluated
 
-            if state == number_of_fractions - 1:
-                # Actual first fraction (only reached when fraction == 1).
-                overlap_penalty = penalty_calc_matrix(action_space, volume_space, min_dose)
-                actual_penalty = penalty_calc_single(action_space, min_dose, observed_overlap)
-                future_value_prob = _bellman_expectation(values[state - 1], volume_space, initial_probs, initial_belief_mu, initial_belief_sigma, n_t)
-                future_values = linear_interp(dose_space, future_value_prob, action_space)
-                values_actual_frac = -overlap_penalty + future_values
-                current_fraction_policy = action_space[values_actual_frac.argmax(axis=1)]
-                actual_value = -actual_penalty + future_values
-                actual_policy = action_space[actual_value.argmax()]
-
-            elif fraction_state == fraction and fraction != number_of_fractions:
-                # Actual fraction (not first, not last).
-                delivered_doses_clipped = action_space[0: max_action(accumulated_dose, action_space, prescribed_dose) + 1]
-                overlap_penalty = penalty_calc_matrix(delivered_doses_clipped, volume_space, min_dose)
-                actual_penalty = penalty_calc_single(delivered_doses_clipped, min_dose, observed_overlap)
-                future_doses = accumulated_dose + delivered_doses_clipped
-                future_doses[future_doses > prescribed_dose] = overdose_sentinel
-                penalties = np.zeros(future_doses.shape)
-                penalties[future_doses > prescribed_dose] = -1e12
-                future_value_prob = _bellman_expectation(values[state - 1], volume_space, initial_probs, initial_belief_mu, initial_belief_sigma, n_t)
-                future_values = linear_interp(dose_space, future_value_prob, future_doses)
-                values_actual_frac = -overlap_penalty + future_values + penalties
-                current_fraction_policy = delivered_doses_clipped[values_actual_frac.argmax(axis=1)]
-                actual_value = -actual_penalty + future_values + penalties
-                actual_policy = delivered_doses_clipped[actual_value.argmax()]
-
-            elif fraction == number_of_fractions:
-                # Actual fraction is the last fraction; action is fixed.
-                best_action = prescribed_dose - accumulated_dose
-                if accumulated_dose > prescribed_dose:
-                    best_action = 0
-                if best_action < min_dose:
-                    best_action = min_dose
-                if best_action > max_dose:
-                    best_action = max_dose
-                actual_policy = best_action
-                actual_value = np.zeros(1)
-
-            else:
-                # Hypothetical future fractions: fill values[state] for all beliefs.
+            if fraction_state != fraction:  # Evaluating a hypothetical future fraction (not today's)
                 if state != 0:
                     # --- Intermediate future fraction ---
-                    # Step 1: belief transitions for all (mi, si, j) at this n_t
+                    # Step 1: belief transitions for all (mi, si, j) at this observation_count
                     mu_vals = _MU_GRID[:, None, None]          # (N_mu, 1, 1)
                     sigma_vals = _SIGMA_GRID[None, :, None]    # (1, N_sigma, 1)
                     o_vals = volume_space[None, None, :]       # (1, 1, N_overlap)
-                    mu_prime = (n_t * mu_vals + o_vals) / (n_t + 1)
+                    mu_prime = (observation_count * mu_vals + o_vals) / (observation_count + 1)
                     delta = o_vals - mu_vals
                     delta_prime = o_vals - mu_prime
-                    sigma2_prime = (n_t * sigma_vals ** 2 + delta * delta_prime) / (n_t + 1)
+                    sigma2_prime = (observation_count * sigma_vals ** 2 + delta * delta_prime) / (observation_count + 1)
                     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))
                     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])
                     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])
@@ -383,6 +343,35 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                     policies[state] = best_actions[:, None, None, None] * np.ones(
                         (N_dose, N_overlap, N_mu, N_sigma)
                     )
+
+            elif fraction == 1: # Today's fraction is the first fraction of the treatment.
+                overlap_penalty = penalty_calc_matrix(action_space, volume_space, min_dose)  # penalty for each (action, overlap) pair
+                actual_penalty = penalty_calc_single(action_space, min_dose, observed_overlap)  # penalty for each action at the observed overlap
+                future_value_prob = _bellman_expectation(values[state - 1], volume_space, initial_probs, initial_belief_mu, initial_belief_sigma, observation_count)  # expected future value for each accumulated dose
+                future_values = linear_interp(dose_space, future_value_prob, action_space)  # interpolate future values onto the action space
+                values_actual_frac = -overlap_penalty + future_values  # total value for each (action, overlap) pair
+                current_fraction_policy = action_space[values_actual_frac.argmax(axis=1)]  # best action for each overlap bin
+                actual_value = -actual_penalty + future_values  # total value at the observed overlap, for each action
+                actual_policy = action_space[actual_value.argmax()]  # best action given the observed overlap
+
+            elif fraction == number_of_fractions: # Today's fraction is the last (action is fixed: deliver exactly the remaining dose).
+                actual_policy = np.clip(prescribed_dose - accumulated_dose, min_dose, max_dose)  # Clamp remaining dose to daily prescription limits
+                actual_value = np.zeros(1)
+
+            else: # Current fraction is in the middle (not first, not last).
+                delivered_doses_clipped = action_space[0: max_action(accumulated_dose, action_space, prescribed_dose) + 1]
+                overlap_penalty = penalty_calc_matrix(delivered_doses_clipped, volume_space, min_dose)
+                actual_penalty = penalty_calc_single(delivered_doses_clipped, min_dose, observed_overlap)
+                future_doses = accumulated_dose + delivered_doses_clipped
+                future_doses[future_doses > prescribed_dose] = overdose_sentinel
+                penalties = np.zeros(future_doses.shape)
+                penalties[future_doses > prescribed_dose] = -1e12
+                future_value_prob = _bellman_expectation(values[state - 1], volume_space, initial_probs, initial_belief_mu, initial_belief_sigma, observation_count)
+                future_values = linear_interp(dose_space, future_value_prob, future_doses)
+                values_actual_frac = -overlap_penalty + future_values + penalties
+                current_fraction_policy = delivered_doses_clipped[values_actual_frac.argmax(axis=1)]
+                actual_value = -actual_penalty + future_values + penalties
+                actual_policy = delivered_doses_clipped[actual_value.argmax()]
 
     physical_dose = np.round(actual_policy, 2)
     penalty_added = penalty_calc_single(physical_dose, min_dose, observed_overlap)
