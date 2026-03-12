@@ -1,8 +1,25 @@
 """
-This is the core of adaptive fractionation that computes the optimal dose for each fraction
+Core solvers for adaptive fractionation dose optimisation.
+
+Public API
+----------
+adaptive_fractionation_core : belief-state DP solver (Stage A); call this at each fraction.
+adaptfx_full                : convenience wrapper that simulates a complete treatment plan.
+precompute_plan             : pre-tabulates dose recommendations for every possible overlap
+                              volume, so clinical staff can prepare before imaging.
+policy_calc                 : baseline (non-belief-state) DP solver; kept for comparison.
+
+Algorithm
+---------
+At each treatment fraction the solver runs backward-induction dynamic programming over a
+5D state space: (accumulated_dose, overlap_volume, belief_mu, belief_sigma, fraction).
+The belief (mu, sigma) tracks a running Gaussian estimate of the patient's overlap
+distribution; it is updated after each observed overlap via Welford's online algorithm.
+Because the belief grid is fixed at module load, all belief-branch probabilities are
+precomputed once (_P_BELIEF) and reused across every call.
 """
 
-__all__ = [
+__all__ = [  # limits what `from core_adaptfx import *` exposes
     "policy_calc",
     "adaptive_fractionation_core",
     "adaptfx_full",
@@ -11,7 +28,7 @@ __all__ = [
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm as _norm
+from scipy.stats import norm
 
 from .constants import (
     DEFAULT_MIN_DOSE, 
@@ -22,6 +39,7 @@ from .constants import (
     DEFAULT_ALPHA,
     DEFAULT_BETA
 )
+
 from .helper_functions import (
     std_calc,
     get_state_space,
@@ -34,114 +52,105 @@ from .helper_functions import (
     nearest_idx,
 )
 
-
-# Belief-state grid constants (Stage A reduced-state)
 # Non-uniform mu grid optimized for the observed 58-patient cohort prefix-mean distribution
-# under a fixed 280-point budget (~2x prior dense-grid compute target).
-# Segment 1 [0.00, 1.00]  with 70 points  (step ~0.0145 cc)
-# Segment 2 [1.05, 4.00]  with 73 points  (step ~0.0410 cc)
-# Segment 3 [4.10, 10.00] with 79 points  (step ~0.0756 cc)
-# Segment 4 [10.20, 16.00] with 28 points (step ~0.2148 cc)
-# Segment 5 [16.50, 30.00] with 30 points (step ~0.4655 cc)
+# under a fixed 280-point budget.
 _MU_GRID = np.unique(np.concatenate([
-    np.linspace(0.0, 1.0, 70),
-    np.linspace(1.05, 4.0, 73),
-    np.linspace(4.1, 10.0, 79),
-    np.linspace(10.2, 16.0, 28),
-    np.linspace(16.5, 30.0, 30),
+    np.linspace(0.0,  1.0,  70),  # 70 points, step ~0.0145 cc
+    np.linspace(1.05, 4.0,  73),  # 73 points, step ~0.0410 cc
+    np.linspace(4.1,  10.0, 79),  # 79 points, step ~0.0756 cc
+    np.linspace(10.2, 16.0, 28),  # 28 points, step ~0.2148 cc
+    np.linspace(16.5, 30.0, 30),  # 30 points, step ~0.4655 cc
 ]))  # 280 grid points total
+
 # Non-uniform sigma grid: fine resolution in [0, 0.7] cc where 75% of patients fall,
 # coarser in the tail.  Range extended to 3.5 cc to avoid clipping outlier patients
 # (observed max σ ≈ 3.3 cc on the 58-patient cohort).
-# Segment 1 [0.05, 0.70]   5 pts  step ~0.163 cc  (p0–p75 of clinical σ)
-# Segment 2 [0.80, 1.80]   3 pts  step ~0.500 cc  (p75–p90)
-# Segment 3 [2.00, 3.50]   2 pts  step ~1.500 cc  (tail)
-# Reduced from 30 → 10 pts to keep values array within CI memory limits at 441 overlap bins.
-# Peak memory: (4, 70, 441, 280, 10) × 8 bytes ≈ 2.75 GB < 7 GB GitHub Actions runner.
+# Peak memory: (4, 70, 441, 280, 10) × 8 bytes ≈ 2.75 GB.
 _SIGMA_GRID = np.unique(np.concatenate([
-    np.linspace(0.05, 0.7, 5),
-    np.linspace(0.8,  1.8, 3),
-    np.linspace(2.0,  3.5, 2),
+    np.linspace(0.05, 0.7, 5),  # step ~0.163 cc  (p0–p75 of clinical σ)
+    np.linspace(0.8,  1.8, 3),  # step ~0.500 cc  (p75–p90)
+    np.linspace(2.0,  3.5, 2),  # step ~1.500 cc  (tail)
 ]))  # 10 grid points total
 _SIGMA_MIN = float(_SIGMA_GRID[0])
 
-# Fixed wide overlap state space for the DP: must cover the full belief grid range so
-# that p_belief[mi, si, :].sum() ≈ 1 for all (mi, si).  Patient-specific volume_space
-# would be valid for one fraction's initial belief but can have degenerate bin widths
-# (e.g. spacing=0 when many negative linspace values are clipped to 0), and—crucially—
-# the narrow range fails to represent future overlap outcomes for beliefs far from the
-# patient's current distribution, corrupting the DP.
+# Fixed overlap state space covering the full belief grid (0 to max_mu + 4·max_sigma),
+# shared across all beliefs. A patient-specific range would be too narrow to represent
+# future outcomes for beliefs far from the current observation, corrupting the DP.
 _VOLUME_SPACE = np.linspace(0.0, _MU_GRID[-1] + 4 * _SIGMA_GRID[-1], 441)  # 0.1 cc steps
 
-# Precompute branch probabilities once at module load (all inputs are module-level constants).
-# p_belief[mi, si, j] = P(overlap bin j | belief (mu_grid[mi], sigma_grid[si]))
-# Left/right tails assigned to first/last bin so probabilities sum to 1.
-def _compute_p_belief():
-    spacing = _VOLUME_SPACE[1] - _VOLUME_SPACE[0]
-    ub = _VOLUME_SPACE + spacing / 2
-    lb = _VOLUME_SPACE - spacing / 2
-    p = (
-        _norm.cdf(ub[None, None, :], loc=_MU_GRID[:, None, None], scale=_SIGMA_GRID[None, :, None])
-        - _norm.cdf(lb[None, None, :], loc=_MU_GRID[:, None, None], scale=_SIGMA_GRID[None, :, None])
-    )
-    p[:, :, 0] += _norm.cdf(lb[0], loc=_MU_GRID[:, None], scale=_SIGMA_GRID[None, :])
-    p[:, :, -1] += 1.0 - _norm.cdf(ub[-1], loc=_MU_GRID[:, None], scale=_SIGMA_GRID[None, :])
-    return p
+def _precompute_branch_probabilities():
+    """Return p[mi, si, j] = P(overlap in bin j | belief (mu_grid[mi], sigma_grid[si])).
 
-_P_BELIEF = _compute_p_belief()  # shape: (N_mu, N_sigma, N_overlap), computed once
-
-
-def _belief_update_1d(mu, sigma, volume_space, n_t):
-    """Welford running-moment update for scalar belief (mu, sigma) over all overlap branches.
-
-    At fraction n_t we have seen n_t observations; o' is the (n_t+1)-th.
-    Returns next_mi, next_si: (N_overlap,) int arrays of nearest grid indices.
+    Uses CDF differences over each bin. Left/right tails are folded into the first/last
+    bin so that probabilities sum to 1 for every belief.
     """
-    mu_prime = (n_t * mu + volume_space) / (n_t + 1)
-    sigma2_prime = (n_t * sigma ** 2 + (volume_space - mu) * (volume_space - mu_prime)) / (n_t + 1)
-    sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))
-    mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])
-    sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])
-    next_mi = nearest_idx(mu_prime, _MU_GRID)
-    next_si = nearest_idx(sigma_prime, _SIGMA_GRID)
-    return next_mi, next_si
+    spacing = _VOLUME_SPACE[1] - _VOLUME_SPACE[0]  # bin width of the overlap grid (varies along the grid)
+    upper_bounds = _VOLUME_SPACE + spacing / 2
+    lower_bounds = _VOLUME_SPACE - spacing / 2
+    # P(bin j | mu, sigma) = CDF(upper_bounds[j]) - CDF(lower_bounds[j]), broadcast over all (mu, sigma) pairs
+    probabilities = (
+        norm.cdf(upper_bounds[None, None, :], loc=_MU_GRID[:, None, None], scale=_SIGMA_GRID[None, :, None])
+        - norm.cdf(lower_bounds[None, None, :], loc=_MU_GRID[:, None, None], scale=_SIGMA_GRID[None, :, None])
+    )
+    # Fold left and right tails into the boundary bins so each row sums to 1
+    probabilities[:, :, 0] += norm.cdf(lower_bounds[0], loc=_MU_GRID[:, None], scale=_SIGMA_GRID[None, :])
+    probabilities[:, :, -1] += 1.0 - norm.cdf(upper_bounds[-1], loc=_MU_GRID[:, None], scale=_SIGMA_GRID[None, :])
+    return probabilities
+
+_P_BELIEF = _precompute_branch_probabilities()  # shape: (N_mu, N_sigma, N_overlap), computed once at module load
 
 
-def _future_value_1d(values_prev, volume_space, p_branch, mu, sigma, n_t):
-    """Expected future value for a single scalar starting belief (mu, sigma).
+def _hypothetical_belief_grid_indices(mu, sigma, volume_space, n_t):
+    """For each hypothetical next overlap in volume_space, compute where the updated
+    belief (mu, sigma) would land on the (_MU_GRID, _SIGMA_GRID) grid.
 
-    Computes: sum_j p_branch[j] * values_prev[d, j, next_mi[j], next_si[j]]
+    Returns next_mi, next_si: (N_overlap,) integer index arrays into _MU_GRID and
+    _SIGMA_GRID, used to look up future values in the DP values array.
+    Uses Welford's online algorithm to update the running mean and variance.
+    """
+    mu_prime = (n_t * mu + volume_space) / (n_t + 1)  # new mean after observing each hypothetical overlap
+    sigma2_prime = (n_t * sigma ** 2 + (volume_space - mu) * (volume_space - mu_prime)) / (n_t + 1)  # new variance after observing each hypothetical overlap
+    sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))  # new sigma, clamped to avoid zero with few observations
+    mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])          # clamp new mu to grid's range
+    sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])  # clamp new sigma to grid's range
+    next_mi = nearest_idx(mu_prime, _MU_GRID)        # nearest mu grid index for each hypothetical next overlap
+    next_si = nearest_idx(sigma_prime, _SIGMA_GRID)  # nearest sigma grid index for each hypothetical next overlap
+    return next_mi, next_si  # indices rather than values so callers can directly index into the DP values array
+
+
+def _bellman_expectation(values_prev, volume_space, p_branch, mu, sigma, n_t):
+    """Bellman expectation over all hypothetical next overlaps for a single belief (mu, sigma).
+
+    Sums future values weighted by branch probabilities:
+        sum_j p_branch[j] * values_prev[d, j, next_mi[j], next_si[j]]
 
     values_prev: (N_dose, N_overlap, N_mu, N_sigma)
-    p_branch:    (N_overlap,) branch probabilities from current belief
-    Returns:     (N_dose,)
+    p_branch:    (N_overlap,) probability of each next overlap under current belief
+    Returns:     (N_dose,) expected future value for each accumulated dose state
     """
-    next_mi, next_si = _belief_update_1d(mu, sigma, volume_space, n_t)
-    branch_vals = values_prev[:, np.arange(len(volume_space)), next_mi, next_si]  # (N_dose, N_overlap)
-    return (branch_vals * p_branch[None, :]).sum(axis=1)
+    next_mi, next_si = _hypothetical_belief_grid_indices(mu, sigma, volume_space, n_t) # If overlap was j, where would the belief (mu, sigma) land on the grid?
+    branch_vals = values_prev[:, np.arange(len(volume_space)), next_mi, next_si]  # Value function of the next belief state
+    return (branch_vals * p_branch[None, :]).sum(axis=1) # Probability-weighed sum of next states' value functions
 
 
+# TODO: remove policy_calc — superseded by adaptive_fractionation_core; not called by app.py
 def policy_calc(fixed_mean_volume: float, fixed_std: float, number_of_fractions: int = DEFAULT_NUMBER_OF_FRACTIONS, min_dose: float = DEFAULT_MIN_DOSE, max_dose: float = DEFAULT_MAX_DOSE, mean_dose:float = DEFAULT_MEAN_DOSE, dose_steps: float = DEFAULT_DOSE_STEPS):
-    """The core function computes the optimal dose for a single fraction.
-    The function optimizes the fractionation based on an objective function
-    which aims to maximize the tumor coverage, i.e. minimize the dose when
-    PTV-OAR overlap is large and maximize the dose when the overlap is small.
+    """Baseline (non-belief-state) DP solver. Computes the optimal dose policy assuming
+    a fixed overlap distribution given by fixed_mean_volume and fixed_std.
 
     Args:
-        fraction (int): number of actual fraction
-        volumes (np.ndarray): list of all volume overlaps observed so far
-        accumulated_dose (float): accumulated physical dose in tumor
-        number_of_fractions (int, optional): number of fractions given in total. Defaults to 5.
-        min_dose (float, optional): minimum phyical dose delivered in each fraction. Defaults to 7.5.
-        max_dose (float, optional): maximum dose delivered in each fraction. Defaults to 9.5.
-        mean_dose (int, optional): mean dose to be delivered over all fractions. Defaults to 8.
+        fixed_mean_volume (float): assumed mean overlap volume (cc).
+        fixed_std (float): assumed standard deviation of overlap volume (cc).
+        number_of_fractions (int, optional): total number of fractions. Defaults to 5.
+        min_dose (float, optional): minimum physical dose per fraction. Defaults to 7.5.
+        max_dose (float, optional): maximum physical dose per fraction. Defaults to 9.5.
+        mean_dose (float, optional): prescribed mean dose per fraction. Defaults to 8.
+        dose_steps (float, optional): dose grid resolution. Defaults to 0.1.
+
     Returns:
-        numpy arrays and floats: returns 9 arrays: policies (all future policies), policies_overlap (policies of the actual overlaps),
-        volume_space (all considered overlap volumes), physical_dose (physical dose to be delivered in the actual fraction),
-        penalty_added (penalty added in the actual fraction if physical_dose is applied), values (values of all future fractions. index 0 is the last fraction),
-        probabilits (probability of each overlap volume to occure), final_penalty (projected final penalty starting from the actual fraction)
+        list: [policies, policies_overlap, volume_space, values, dose_space, probabilities]
     """
-    goal = number_of_fractions * mean_dose #dose to be reached
+    prescribed_dose = number_of_fractions * mean_dose #dose to be reached
 
     distribution_params = (fixed_mean_volume, fixed_std)  # Keep as (mean, std) to avoid creating a frozen scipy distribution object (expensive in tight loops).
     accumulated_dose = 0
@@ -150,23 +159,23 @@ def policy_calc(fixed_mean_volume: float, fixed_std: float, number_of_fractions:
     volume_space = get_state_space(distribution_params)  # Helper expects (mean, std) tuple parameters.
     probabilities = probdist(distribution_params,volume_space) #produce probabilities of the respective volumes
     volume_space = volume_space.clip(0) #clip the volume space to 0cc as negative volumes do not exist
-    dose_space = np.arange(minimum_future,goal, dose_steps) #spans the dose space delivered to the tumor
-    dose_space = np.concatenate((dose_space, [goal, goal + 0.05])) # add an additional state that overdoses and needs to be prevented
-    bound = goal + 0.05
+    dose_space = np.arange(minimum_future,prescribed_dose, dose_steps) #spans the dose space delivered to the tumor
+    dose_space = np.concatenate((dose_space, [prescribed_dose, prescribed_dose + 0.05])) # add an additional state that overdoses and needs to be prevented
+    bound = prescribed_dose + 0.05
     delivered_doses = np.arange(min_dose,max_dose + 0.01,dose_steps) #spans the action space of all deliverable doses
     policies_overlap = np.zeros(len(volume_space))
     values = np.zeros(((number_of_fractions - 1), len(dose_space), len(volume_space))) # 2d values list with first index being the accumulated dose and second being the overlap volume
     policies = np.zeros(((number_of_fractions - 1), len(dose_space), len(volume_space)))
-    if goal - accumulated_dose < (number_of_fractions + 1 - 1) * min_dose:
+    if prescribed_dose - accumulated_dose < (number_of_fractions + 1 - 1) * min_dose:
         actual_policy = min_dose
         policies = np.ones(200)*actual_policy
         policies_overlap = np.ones(200)*actual_policy
-        values = np.ones(((number_of_fractions - 1), len(dose_space), len(volume_space))) * -1000000000000 
-    elif goal - accumulated_dose > (number_of_fractions + 1 - 1) * max_dose:
+        values = np.ones(((number_of_fractions - 1), len(dose_space), len(volume_space))) * -1000000000000
+    elif prescribed_dose - accumulated_dose > (number_of_fractions + 1 - 1) * max_dose:
         actual_policy = max_dose
         policies = np.ones(200)*actual_policy
         policies_overlap = np.ones(200)*actual_policy
-        values = np.ones(((number_of_fractions - 1), len(dose_space), len(volume_space))) * -1000000000000 
+        values = np.ones(((number_of_fractions - 1), len(dose_space), len(volume_space))) * -1000000000000
     else:
         for state in range(number_of_fractions):
             if (state == number_of_fractions - 1):  # first fraction with no prior dose delivered so we dont loop through dose_space
@@ -179,13 +188,13 @@ def policy_calc(fixed_mean_volume: float, fixed_std: float, number_of_fractions:
                 future_value_prob = (values[state - 1] * probabilities).sum(axis=1)
                 if state != 0:
                     overlap_penalty = penalty_calc_matrix(delivered_doses, volume_space, min_dose) #This means only values over min_dose get a penalty.
-                    max_allowed_actions = np.minimum(delivered_doses[-1], goal - dose_space)
+                    max_allowed_actions = np.minimum(delivered_doses[-1], prescribed_dose - dose_space)
                     max_action_indices = np.abs(delivered_doses.reshape(1, -1) - max_allowed_actions.reshape(-1, 1)).argmin(axis=1)
                     max_action_indices = np.where(max_action_indices == 0, 1, max_action_indices)
                     valid_actions = np.arange(delivered_doses.size).reshape(1, -1) <= max_action_indices.reshape(-1, 1)
 
                     future_doses = dose_space.reshape(-1, 1) + delivered_doses.reshape(1, -1)
-                    overdosed = future_doses > goal
+                    overdosed = future_doses > prescribed_dose
                     future_doses = np.where(overdosed, bound, future_doses) #all overdosing doses are set to the penalty state
                     future_values = linear_interp(dose_space, future_value_prob, future_doses)  # for each action and sparing factor calculate the penalty of the action and add the future value we will only have as many future values as we have actions (not sparing dependent)
                     penalties = np.zeros(future_doses.shape)
@@ -196,91 +205,98 @@ def policy_calc(fixed_mean_volume: float, fixed_std: float, number_of_fractions:
                     values[state] = vs.max(axis=1)
 
                 else:  # last fraction when looping, only give the final penalty
-                    best_actions = goal - dose_space
+                    best_actions = prescribed_dose - dose_space
                     best_actions[best_actions > max_dose] = max_dose
                     best_actions[best_actions < min_dose] = min_dose
                     future_accumulated_dose = dose_space + best_actions
                     last_penalty = penalty_calc_single(best_actions.reshape(-1, 1), min_dose, volume_space.reshape(1, -1))
                     underdose_penalty = np.zeros(future_accumulated_dose.shape)
                     overdose_penalty = np.zeros(future_accumulated_dose.shape)
-                    underdose_penalty[np.round(future_accumulated_dose,2) < goal] = -1000000000000 #in theory one can change this such that underdosing is penalted linearly
-                    overdose_penalty[np.round(future_accumulated_dose,2) > goal] = -1000000000000
+                    underdose_penalty[np.round(future_accumulated_dose,2) < prescribed_dose] = -1000000000000 #in theory one can change this such that underdosing is penalted linearly
+                    overdose_penalty[np.round(future_accumulated_dose,2) > prescribed_dose] = -1000000000000
                     values[state] = (- last_penalty + underdose_penalty.reshape(-1, 1) + overdose_penalty.reshape(-1, 1))  # gives the value of each action for all sparing factors. elements 0-len(sparingfactors) are the Values for
                     policies[state] = best_actions.reshape(-1, 1)
                 
 
     return [policies, policies_overlap, volume_space, values, dose_space, probabilities]
-    
+
+
+def _set_infeasible_state(fixed_dose, values, N_overlap, remaining_fractions):
+    """Set DP arrays to reflect an infeasible treatment plan.
+
+    Called when the prescribed dose is unreachable or unavoidably exceeded.
+    Marks all future states as invalid and returns a constant policy and sentinel value.
+    """
+    current_fraction_policy = np.ones(N_overlap) * fixed_dose
+    if remaining_fractions > 1:  # skip on last fraction: no future fractions exist, values array is empty
+        values[:] = -1e12  # mark all future states as invalid — DP is not run in infeasible cases
+    actual_value = np.ones(1) * -1e12  # signal "infeasible case" to downstream code
+    return current_fraction_policy, actual_value
 
 
 def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_dose: float, number_of_fractions: int = DEFAULT_NUMBER_OF_FRACTIONS, min_dose: float = DEFAULT_MIN_DOSE, max_dose: float = DEFAULT_MAX_DOSE, mean_dose:float = DEFAULT_MEAN_DOSE, dose_steps: float = DEFAULT_DOSE_STEPS, alpha: float = DEFAULT_ALPHA, beta:float = DEFAULT_BETA):
-    """The core function computes the optimal dose for a single fraction.
-    The function optimizes the fractionation based on an objective function
-    which aims to maximize the tumor coverage, i.e. minimize the dose when
-    PTV-OAR overlap is large and maximize the dose when the overlap is small.
+    """Belief-state DP solver. Computes the recommended dose for the current fraction.
+
+    Optimizes fractionation by minimizing expected PTV underdosage cost: lower dose
+    when PTV-OAR overlap is large, higher dose when overlap is small.
 
     Args:
-        fraction (int): number of actual fraction
-        volumes (np.ndarray): list of all volume overlaps observed so far
-        accumulated_dose (float): accumulated physical dose in tumor
-        number_of_fractions (int, optional): number of fractions given in total. Defaults to 5.
-        min_dose (float, optional): minimum phyical dose delivered in each fraction. Defaults to 7.5.
-        max_dose (float, optional): maximum dose delivered in each fraction. Defaults to 9.5.
-        mean_dose (int, optional): mean dose to be delivered over all fractions. Defaults to 8.
-        alpha (float, optional): alpha value of gamma distribution. Defaults to 1.8380125313579265.
-        beta (float, optional): beta value of gamma distribution. Defaults to 0.2654168553532238.
+        fraction (int): current fraction number (1-indexed).
+        volumes (np.ndarray): all overlap volumes observed so far, including the current fraction.
+        accumulated_dose (float): total physical dose delivered to PTV before this fraction (Gy).
+        number_of_fractions (int, optional): total number of fractions. Defaults to 5.
+        min_dose (float, optional): minimum physical dose per fraction (Gy). Defaults to 7.5.
+        max_dose (float, optional): maximum physical dose per fraction (Gy). Defaults to 9.5.
+        mean_dose (float, optional): prescribed mean dose per fraction (Gy). Defaults to 8.
+        dose_steps (float, optional): dose grid resolution (Gy). Defaults to 0.1.
+        alpha (float, optional): shape parameter of the gamma prior on sigma. Defaults to 1.838.
+        beta (float, optional): scale parameter of the gamma prior on sigma. Defaults to 0.265.
 
     Returns:
-        numpy arrays and floats: returns 9 arrays: policies (all future policies), policies_overlap (policies of the actual overlaps),
-        volume_space (all considered overlap volumes), physical_dose (physical dose to be delivered in the actual fraction),
-        penalty_added (penalty added in the actual fraction if physical_dose is applied), values (values of all future fractions. index 0 is the last fraction),
-        probabilits (probability of each overlap volume to occure), final_penalty (projected final penalty starting from the actual fraction)
+        list: [policies, current_fraction_policy, volume_space, physical_dose, penalty_added,
+               values, dose_space, initial_probs, final_penalty]
     """
-    goal = number_of_fractions * mean_dose
-    actual_volume = volumes[-1]
-    if fraction == 1:
-        accumulated_dose = 0
-    minimum_future = accumulated_dose + min_dose
+    prescribed_dose = number_of_fractions * mean_dose  # total prescribed dose (Gy)
+    observed_overlap = volumes[-1]  # overlap observed at the current fraction
+    min_accumulated_dose_after_fraction = accumulated_dose + min_dose  # minimum possible accumulated dose after this fraction
 
-    # Belief state initialisation from observed volumes (Stage A reduced-state)
-    mu_start = volumes.mean()
-    sigma_start = std_calc(volumes, alpha, beta)
-    # Use the fixed wide volume space for the DP so that p_belief sums to ~1 for every
-    # belief in the grid and future overlap outcomes are correctly represented regardless
-    # of the current fraction's initial belief.
+    # --- Current patient belief from observed volumes ---
+    initial_belief_mu = volumes.mean()
+    initial_belief_sigma = std_calc(volumes, alpha, beta)
+     # Next, set precomputed branch probabilities: p_belief[mi, si, j] = P(overlap bin j | belief (mu_grid[mi], sigma_grid[si]))
+    p_belief = _P_BELIEF  # shape: (N_mu, N_sigma, N_overlap)
+
+    # The DP uses a fixed space, with p_belief summing to ~1 for every belief in the grid.
+    # Future overlap outcomes are correctly represented regardless of the current belief.
     volume_space = _VOLUME_SPACE
-    initial_probs = probdist((mu_start, sigma_start), volume_space)
+    initial_probs = probdist((initial_belief_mu, initial_belief_sigma), volume_space)
 
-    dose_space = np.arange(minimum_future, goal, dose_steps)
-    dose_space = np.concatenate((dose_space, [goal, goal + 0.05]))
-    bound = goal + 0.05
-    delivered_doses = np.arange(min_dose, max_dose + 0.01, dose_steps)
+    # --- State and action spaces ---
+    dose_space = np.arange(min_accumulated_dose_after_fraction, prescribed_dose, dose_steps)  # reachable accumulated PTV doses from this fraction onwards
+    overdose_sentinel = prescribed_dose + 0.05  # any accumulated PTV dose mapped here represents an overdose; value just needs to be outside the valid dose range
+    dose_space = np.concatenate((dose_space, [prescribed_dose, overdose_sentinel]))  # prescribed_dose appended explicitly: arange excludes stop value and float steps can miss it
+    action_space = np.arange(min_dose, max_dose + 0.01, dose_steps)  # deliverable doses per fraction; +0.01 ensures max_dose is included
 
+    # --- Dimension shorthands ---
     N_mu = len(_MU_GRID)
     N_sigma = len(_SIGMA_GRID)
     N_overlap = len(volume_space)
     N_dose = len(dose_space)
 
-    # Branch probabilities: use the module-level precomputed constant (volume_space == _VOLUME_SPACE).
-    p_belief = _P_BELIEF  # shape: (N_mu, N_sigma, N_overlap)
+    remaining_ptv_dose = prescribed_dose - accumulated_dose
+    remaining_fractions = number_of_fractions + 1 - fraction
 
-    n_states = number_of_fractions - fraction
-    values = np.zeros((n_states, N_dose, N_overlap, N_mu, N_sigma))
-    policies = np.zeros((n_states, N_dose, N_overlap, N_mu, N_sigma))
-    policies_overlap = np.zeros(N_overlap)
+    # --- Value Function and Policy Tables (5D: one entry per future fraction) ---
+    values = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))    # V(s): DP Value Function over all future states; axes: (fraction_index, accumulated_dose, overlap, belief_mu, belief_sigma)
+    policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))  # π(s): optimal Dose Action for each future state; axes: (fraction_index, accumulated_dose, overlap, belief_mu, belief_sigma)
+    current_fraction_policy = np.zeros(N_overlap)  # optimal dose for the current fraction, as a function of current overlap (will be populated below)
 
-    if goal - accumulated_dose < (number_of_fractions + 1 - fraction) * min_dose:
+    if remaining_ptv_dose < remaining_fractions * min_dose:  # overshoot unavoidable (prescribed dose will be exceeded); deliver min_dose.
         actual_policy = min_dose
-        policies_overlap = np.ones(N_overlap) * actual_policy
-        if n_states > 0:
-            values[:] = -1e12
-        actual_value = np.ones(1) * -1e12
-    elif goal - accumulated_dose > (number_of_fractions + 1 - fraction) * max_dose:
+        current_fraction_policy, actual_value = _set_infeasible_state(actual_policy, values, N_overlap, remaining_fractions)
+    elif remaining_ptv_dose > remaining_fractions * max_dose:  # underdose unavoidable (prescribed dose unreachable); deliver max_dose.
         actual_policy = max_dose
-        policies_overlap = np.ones(N_overlap) * actual_policy
-        if n_states > 0:
-            values[:] = -1e12
-        actual_value = np.ones(1) * -1e12
+        current_fraction_policy, actual_value = _set_infeasible_state(actual_policy, values, N_overlap, remaining_fractions)
     else:
         min_float = np.finfo(np.float64).min
         for state, fraction_state in enumerate(np.arange(number_of_fractions, fraction - 1, -1)):
@@ -288,39 +304,35 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
 
             if state == number_of_fractions - 1:
                 # Actual first fraction (only reached when fraction == 1).
-                overlap_penalty = penalty_calc_matrix(delivered_doses, volume_space, min_dose)
-                actual_penalty = penalty_calc_single(delivered_doses, min_dose, actual_volume)
-                future_value_prob = _future_value_1d(
-                    values[state - 1], volume_space, initial_probs, mu_start, sigma_start, n_t
-                )
-                future_values = linear_interp(dose_space, future_value_prob, delivered_doses)
+                overlap_penalty = penalty_calc_matrix(action_space, volume_space, min_dose)
+                actual_penalty = penalty_calc_single(action_space, min_dose, observed_overlap)
+                future_value_prob = _bellman_expectation(values[state - 1], volume_space, initial_probs, initial_belief_mu, initial_belief_sigma, n_t)
+                future_values = linear_interp(dose_space, future_value_prob, action_space)
                 values_actual_frac = -overlap_penalty + future_values
-                policies_overlap = delivered_doses[values_actual_frac.argmax(axis=1)]
+                current_fraction_policy = action_space[values_actual_frac.argmax(axis=1)]
                 actual_value = -actual_penalty + future_values
-                actual_policy = delivered_doses[actual_value.argmax()]
+                actual_policy = action_space[actual_value.argmax()]
 
             elif fraction_state == fraction and fraction != number_of_fractions:
                 # Actual fraction (not first, not last).
-                delivered_doses_clipped = delivered_doses[0: max_action(accumulated_dose, delivered_doses, goal) + 1]
+                delivered_doses_clipped = action_space[0: max_action(accumulated_dose, action_space, prescribed_dose) + 1]
                 overlap_penalty = penalty_calc_matrix(delivered_doses_clipped, volume_space, min_dose)
-                actual_penalty = penalty_calc_single(delivered_doses_clipped, min_dose, actual_volume)
+                actual_penalty = penalty_calc_single(delivered_doses_clipped, min_dose, observed_overlap)
                 future_doses = accumulated_dose + delivered_doses_clipped
-                future_doses[future_doses > goal] = bound
+                future_doses[future_doses > prescribed_dose] = overdose_sentinel
                 penalties = np.zeros(future_doses.shape)
-                penalties[future_doses > goal] = -1e12
-                future_value_prob = _future_value_1d(
-                    values[state - 1], volume_space, initial_probs, mu_start, sigma_start, n_t
-                )
+                penalties[future_doses > prescribed_dose] = -1e12
+                future_value_prob = _bellman_expectation(values[state - 1], volume_space, initial_probs, initial_belief_mu, initial_belief_sigma, n_t)
                 future_values = linear_interp(dose_space, future_value_prob, future_doses)
                 values_actual_frac = -overlap_penalty + future_values + penalties
-                policies_overlap = delivered_doses_clipped[values_actual_frac.argmax(axis=1)]
+                current_fraction_policy = delivered_doses_clipped[values_actual_frac.argmax(axis=1)]
                 actual_value = -actual_penalty + future_values + penalties
                 actual_policy = delivered_doses_clipped[actual_value.argmax()]
 
             elif fraction == number_of_fractions:
                 # Actual fraction is the last fraction; action is fixed.
-                best_action = goal - accumulated_dose
-                if accumulated_dose > goal:
+                best_action = prescribed_dose - accumulated_dose
+                if accumulated_dose > prescribed_dose:
                     best_action = 0
                 if best_action < min_dose:
                     best_action = min_dose
@@ -360,19 +372,19 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                         future_value_prob_full += vals_flat[:, j, :][:, next_b[:, :, j]] * p_belief[None, :, :, j]
 
                     # Step 4: vectorised interpolation over dose for all (mi, si) simultaneously
-                    overlap_penalty = penalty_calc_matrix(delivered_doses, volume_space, min_dose)
-                    max_allowed_actions = np.minimum(delivered_doses[-1], goal - dose_space)
+                    overlap_penalty = penalty_calc_matrix(action_space, volume_space, min_dose)
+                    max_allowed_actions = np.minimum(action_space[-1], prescribed_dose - dose_space)
                     max_action_indices = np.abs(
-                        delivered_doses[None, :] - max_allowed_actions[:, None]
+                        action_space[None, :] - max_allowed_actions[:, None]
                     ).argmin(axis=1)
                     max_action_indices = np.where(max_action_indices == 0, 1, max_action_indices)
                     valid_actions = (
-                        np.arange(delivered_doses.size)[None, :] <= max_action_indices[:, None]
+                        np.arange(action_space.size)[None, :] <= max_action_indices[:, None]
                     )  # (N_dose, N_action)
 
-                    future_doses = dose_space[:, None] + delivered_doses[None, :]  # (N_dose, N_action)
-                    overdosed = future_doses > goal
-                    future_doses_clipped = np.where(overdosed, bound, future_doses)
+                    future_doses = dose_space[:, None] + action_space[None, :]  # (N_dose, N_action)
+                    overdosed = future_doses > prescribed_dose
+                    future_doses_clipped = np.where(overdosed, overdose_sentinel, future_doses)
                     overdose_pens = np.where(overdosed, -1e12, 0.0)
 
                     q = future_doses_clipped.ravel()
@@ -387,7 +399,7 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                     fvp_hi = future_value_prob_full[hi_idx, :, :]
                     future_values_full = (
                         fvp_lo * (1.0 - w[:, None, None]) + fvp_hi * w[:, None, None]
-                    ).reshape(N_dose, len(delivered_doses), N_mu, N_sigma)
+                    ).reshape(N_dose, len(action_space), N_mu, N_sigma)
 
                     # Step 5: value/policy update.
                     # vs_base_T: (N_dose, N_mu, N_sigma, N_action) — action axis last for cache-friendly argmax.
@@ -396,7 +408,7 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                     vs_base = future_values_full + overdose_pens[:, :, None, None]
                     vs_base = np.where(valid_actions[:, :, None, None], vs_base, min_float)
                     vs_base_T = vs_base.transpose(0, 2, 3, 1).copy()  # (N_dose, N_mu, N_sigma, N_action) contiguous
-                    N_action = len(delivered_doses)
+                    N_action = len(action_space)
                     vs_j_buf = np.empty_like(vs_base_T)
                     ai_buf = np.empty((N_dose, N_mu, N_sigma), dtype=np.intp)
                     # Precompute flat index base so values can be gathered without take_along_axis
@@ -411,13 +423,13 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                         np.subtract(vs_base_T, overlap_penalty[j], out=vs_j_buf)
                         np.argmax(vs_j_buf, axis=-1, out=ai_buf)
                         values_state[:, j, :, :] = vs_flat[flat_base + ai_buf]
-                        policies_state[:, j, :, :] = delivered_doses[ai_buf]
+                        policies_state[:, j, :, :] = action_space[ai_buf]
                     values[state] = values_state
                     policies[state] = policies_state
 
                 else:
                     # --- Terminal fraction (state == 0) ---
-                    best_actions = goal - dose_space
+                    best_actions = prescribed_dose - dose_space
                     best_actions[best_actions > max_dose] = max_dose
                     best_actions[best_actions < min_dose] = min_dose
                     future_accumulated_dose = dose_space + best_actions
@@ -426,8 +438,8 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                     )  # (N_dose, N_overlap)
                     underdose_penalty = np.zeros(future_accumulated_dose.shape)
                     overdose_penalty = np.zeros(future_accumulated_dose.shape)
-                    underdose_penalty[np.round(future_accumulated_dose, 2) < goal] = -1e12
-                    overdose_penalty[np.round(future_accumulated_dose, 2) > goal] = -1e12
+                    underdose_penalty[np.round(future_accumulated_dose, 2) < prescribed_dose] = -1e12
+                    overdose_penalty[np.round(future_accumulated_dose, 2) > prescribed_dose] = -1e12
                     terminal_val = (
                         -last_penalty
                         + underdose_penalty[:, None]
@@ -440,9 +452,9 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
                     )
 
     physical_dose = np.round(actual_policy, 2)
-    penalty_added = penalty_calc_single(physical_dose, min_dose, actual_volume)
+    penalty_added = penalty_calc_single(physical_dose, min_dose, observed_overlap)
     final_penalty = np.max(actual_value) - penalty_added
-    return [policies, policies_overlap, volume_space, physical_dose, penalty_added, values, dose_space, initial_probs, final_penalty]
+    return [policies, current_fraction_policy, volume_space, physical_dose, penalty_added, values, dose_space, initial_probs, final_penalty]
     
    
 def adaptfx_full(volumes: list, number_of_fractions: int = DEFAULT_NUMBER_OF_FRACTIONS, min_dose: float = DEFAULT_MIN_DOSE, max_dose: float = DEFAULT_MAX_DOSE, mean_dose: float = DEFAULT_MEAN_DOSE, dose_steps: float = DEFAULT_DOSE_STEPS, alpha: float = DEFAULT_ALPHA, beta:float = DEFAULT_BETA):
