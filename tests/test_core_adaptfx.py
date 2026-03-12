@@ -701,10 +701,13 @@ class TestCoreAdaptfxPerformance:
     def test_adaptfx_full_multiple_patients(self, evaluation_patient_data):
         """Test adaptfx_full performance with multiple patients."""
         import time
-        
+
         start_time = time.time()
-        
-        # Run adaptfx_full for all patients
+
+        # NOTE: patients are processed sequentially here by design.
+        # _fill_values_policies already parallelises across overlap bins via Numba prange,
+        # so launching multiple patient solves in parallel threads/processes would
+        # over-subscribe the CPU and give no additional throughput.
         for patient_overlaps, prescription in zip(
             evaluation_patient_data['overlaps'], 
             evaluation_patient_data['prescriptions']

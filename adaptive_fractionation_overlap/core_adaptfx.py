@@ -27,6 +27,7 @@ __all__ = [  # limits what `from core_adaptfx import *` exposes
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
+from numba import njit, prange
 
 from .constants import (
     DEFAULT_MIN_DOSE, 
@@ -142,6 +143,36 @@ def _set_infeasible_state(fixed_dose, values, N_overlap, remaining_fractions):
         values[:] = -1e12  # mark all future states as invalid — DP is not run in infeasible cases
     actual_value = np.ones(1) * -1e12  # signal "infeasible case" to downstream code
     return current_fraction_policy, actual_value
+
+
+@njit(parallel=True, cache=True)
+def _fill_values_policies(vs_base_T, overlap_penalty, flat_base, action_space, values_state, policies_state):
+    """Fill values_state and policies_state over all overlap bins in parallel.
+
+    For each overlap bin j, subtracts the per-action penalty from the future-value
+    array, finds the best action via argmax, gathers the corresponding value, and
+    records the best action.  Parallelised over j (N_overlap=441 independent iterations).
+
+    vs_base_T:      (N_dose, N_mu, N_sigma, N_action) — future values before penalty, contiguous
+    overlap_penalty: (N_overlap, N_action)             — penalty[j] is (N_action,)
+    flat_base:      (N_dose, N_mu, N_sigma)            — precomputed flat index base
+    action_space:   (N_action,)                        — deliverable doses
+    values_state:   (N_dose, N_overlap, N_mu, N_sigma) — output: best values
+    policies_state: (N_dose, N_overlap, N_mu, N_sigma) — output: best actions
+    """
+    N_dose   = vs_base_T.shape[0]
+    N_mu     = vs_base_T.shape[1]
+    N_sigma  = vs_base_T.shape[2]
+    N_overlap = overlap_penalty.shape[0]
+    for j in prange(N_overlap):
+        vs_j = vs_base_T - overlap_penalty[j]   # (N_dose, N_mu, N_sigma, N_action), thread-local
+        ai = np.argmax(vs_j, axis=3)             # (N_dose, N_mu, N_sigma)
+        vs_j_flat = vs_j.ravel()
+        for d in range(N_dose):
+            for m in range(N_mu):
+                for s in range(N_sigma):
+                    values_state[d, j, m, s]   = vs_j_flat[flat_base[d, m, s] + ai[d, m, s]]
+                    policies_state[d, j, m, s] = action_space[ai[d, m, s]]
 
 
 def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_dose: float, number_of_fractions: int = DEFAULT_NUMBER_OF_FRACTIONS, min_dose: float = DEFAULT_MIN_DOSE, max_dose: float = DEFAULT_MAX_DOSE, mean_dose:float = DEFAULT_MEAN_DOSE, dose_steps: float = DEFAULT_DOSE_STEPS, alpha: float = DEFAULT_ALPHA, beta:float = DEFAULT_BETA):
@@ -313,27 +344,19 @@ def adaptive_fractionation_core(fraction: int, volumes: np.ndarray, accumulated_
 
                     # Step 5: value/policy update.
                     # vs_base_T: (N_dose, N_mu, N_sigma, N_action) — action axis last for cache-friendly argmax.
-                    # Preallocated buffers avoid per-iteration heap allocations.
-                    # Flat-base index replaces take_along_axis (avoids one temporary array per j).
+                    # Flat-base index passed to Numba kernel avoids take_along_axis temporaries.
                     vs_base = future_values_full + overdose_pens[:, :, None, None]
                     vs_base = np.where(valid_actions[:, :, None, None], vs_base, min_float)
                     vs_base_T = vs_base.transpose(0, 2, 3, 1).copy()  # (N_dose, N_mu, N_sigma, N_action) contiguous
                     N_action = len(action_space)
-                    vs_j_buf = np.empty_like(vs_base_T)
-                    ai_buf = np.empty((N_dose, N_mu, N_sigma), dtype=np.intp)
-                    # Precompute flat index base so values can be gathered without take_along_axis
+                    # Precompute flat index base so the Numba kernel can gather values without take_along_axis
                     _d = np.arange(N_dose)[:, None, None]
                     _m = np.arange(N_mu)[None, :, None]
                     _s = np.arange(N_sigma)[None, None, :]
                     flat_base = (_d * N_mu * N_sigma + _m * N_sigma + _s) * N_action
-                    vs_flat = vs_j_buf.ravel()  # flat view updated in-place each iteration
                     values_state = np.empty((N_dose, N_overlap, N_mu, N_sigma))
                     policies_state = np.empty((N_dose, N_overlap, N_mu, N_sigma))
-                    for j in range(N_overlap):
-                        np.subtract(vs_base_T, overlap_penalty[j], out=vs_j_buf)
-                        np.argmax(vs_j_buf, axis=-1, out=ai_buf)
-                        values_state[:, j, :, :] = vs_flat[flat_base + ai_buf]
-                        policies_state[:, j, :, :] = action_space[ai_buf]
+                    _fill_values_policies(vs_base_T, overlap_penalty, flat_base, action_space, values_state, policies_state)
                     values[state] = values_state
                     policies[state] = policies_state
 
