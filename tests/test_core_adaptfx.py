@@ -280,6 +280,7 @@ class TestAdaptfxFull:
         assert np.allclose(accumulated_doses, expected_accumulated, atol=1e-10), \
             "Accumulated doses should follow algorithm pattern: [0, cumsum(doses[:-1])]"
     
+    @pytest.mark.slow
     def test_adaptfx_full_evaluation_style(self, evaluation_patient_data):
 
         for i, (patient_overlaps, prescription) in enumerate(
@@ -472,6 +473,7 @@ class TestPrecomputePlan:
 
 # Integration tests combining multiple functions
 @pytest.mark.integration
+@pytest.mark.slow
 class TestCoreAdaptfxIntegration:
     """Integration tests for core adaptive fractionation functions."""
     
