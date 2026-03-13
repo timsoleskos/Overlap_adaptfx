@@ -477,6 +477,7 @@ class TestPrecomputePlan:
 
 # Integration tests combining multiple functions
 @pytest.mark.integration
+@pytest.mark.slow
 class TestCoreAdaptfxIntegration:
     """Integration tests for core adaptive fractionation functions."""
     
