@@ -9,7 +9,6 @@ __all__ = [
     "probdist",
     "penalty_calc_single",
     "penalty_calc_matrix",
-    "max_action",
     "actual_policy_plotter",
     "analytic_plotting",
     "min_dose_to_deliver",
@@ -169,29 +168,6 @@ def penalty_calc_matrix(delivered_doses, volume_space, min_dose, intercept=INTER
     overlap_penalty = overlap_penalty_linear + overlap_penalty_quadratic
     return overlap_penalty
 
-
-def max_action(accumulated_dose, dose_space, goal):
-    """
-    Computes the maximal dose that can be delivered to the tumor in each fraction depending on the actual accumulated dose
-
-    Parameters
-    ----------
-    accumulated_dose : float
-        accumulated tumor dose so far.
-    dose_space : list/array
-        array with all discrete dose steps.
-    goal : float
-        prescribed tumor dose.
-    Returns
-    -------
-    sizer : integer
-        gives the size of the resized actionspace to reach the prescribed tumor dose.
-
-    """
-    max_deliverable = min(max(dose_space), goal - accumulated_dose)
-    sizer = np.argmin(np.abs(dose_space - max_deliverable))
-    sizer = 1 if sizer == 0 else sizer #Make sure that at least the minimum dose is delivered
-    return sizer
 
 def actual_policy_plotter(policies_overlap: np.ndarray,volume_space: np.ndarray, probabilities: np.ndarray = None):
     """plots the actual policy given the overlap in volume space and the policies in policies overlap

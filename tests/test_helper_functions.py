@@ -20,7 +20,6 @@ from adaptive_fractionation_overlap.helper_functions import (
     probdist,
     penalty_calc_single,
     penalty_calc_matrix,
-    max_action,
     actual_policy_plotter,
     analytic_plotting
 )

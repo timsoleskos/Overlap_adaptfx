@@ -43,7 +43,6 @@ from .helper_functions import (
     std_calc,
     get_state_space,
     probdist,
-    max_action,
     penalty_calc_single,
     penalty_calc_matrix,
     min_dose_to_deliver,
@@ -112,9 +111,9 @@ def _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count
     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))  # new sigma, clamped to avoid zero with few observations
     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])          # clamp new mu to grid's range
     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])  # clamp new sigma to grid's range
-    next_mi = nearest_idx(mu_prime, _MU_GRID)        # nearest mu grid index for each hypothetical next overlap
-    next_si = nearest_idx(sigma_prime, _SIGMA_GRID)  # nearest sigma grid index for each hypothetical next overlap
-    return next_mi, next_si  # indices rather than values so callers can directly index into the DP values array
+    next_mu_index = nearest_idx(mu_prime, _MU_GRID)        # nearest mu grid index for each hypothetical next overlap
+    next_sigma_index = nearest_idx(sigma_prime, _SIGMA_GRID)  # nearest sigma grid index for each hypothetical next overlap
+    return next_mu_index, next_sigma_index  # indices rather than values so callers can directly index into the DP values array
 
 
 def _bellman_expectation(values_prev, volume_space, p_branch, mu, sigma, observation_count):
@@ -418,19 +417,47 @@ def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, 
                 actual_value = np.zeros(1)  # total state value = 0; no future fractions remain and the immediate cost is subtracted separately via penalty_added on line 434
 
             else: # Current fraction is in the middle (not first, not last).
-                delivered_doses_clipped = action_space[0: max_action(accumulated_dose, action_space, prescribed_dose) + 1]
-                overlap_penalty = penalty_calc_matrix(delivered_doses_clipped, volume_space, min_dose)
-                actual_penalty = penalty_calc_single(delivered_doses_clipped, min_dose, observed_overlap)
-                future_doses = accumulated_dose + delivered_doses_clipped
-                future_doses[future_doses > prescribed_dose] = overdose_sentinel
-                penalties = np.zeros(future_doses.shape)
-                penalties[future_doses > prescribed_dose] = -1e12
+                
+                # Determine feasible actions: daily doses, from min_dose, up to the largest dose that still leaves
+                # enough budget for all remaining fractions to each deliver at least min_dose.
+                min_dose_reserved_for_future = (number_of_fractions - fraction_index_today) * min_dose  # minimum dose budget that must be reserved for all remaining fractions after this one
+                max_allowed_action = np.minimum(action_space[-1], prescribed_dose - accumulated_dose - min_dose_reserved_for_future)  # largest single-fraction dose that still leaves enough budget for future fractions
+                max_action_index = np.abs(action_space - max_allowed_action).argmin()  # index into action_space of the largest allowed dose
+                max_action_index = max(max_action_index, 1)  # clamp to at least index 1 so that at least one action is available
+                feasible_actions = action_space[:max_action_index + 1]
+
+                # Immediate OAR cost, for each feasible action, across all overlap bins.
+                overlap_penalty = penalty_calc_matrix(feasible_actions, volume_space, min_dose)
+
+                # Immediate OAR cost for each feasible action at today's actually observed overlap.
+                immediate_cost = penalty_calc_single(feasible_actions, min_dose, observed_overlap)
+
+                future_accumulated_dose = accumulated_dose + feasible_actions  # total accumulated dose after delivering each feasible action
+
+                # Actions that would exceed the prescription are infeasible: replace their future dose
+                # with the overdose sentinel (the last dose_space point) so linear_interp stays
+                # in-bounds, then apply a large negative penalty (-1e12) to ensure they are never selected.
+                future_accumulated_dose[future_accumulated_dose > prescribed_dose] = overdose_sentinel
+                overdose_penalties = np.zeros(future_accumulated_dose.shape)
+                overdose_penalties[future_accumulated_dose > prescribed_dose] = -1e12
+
+                # Expected future state value for each possible next accumulated dose, integrated over all
+                # possible overlap outcomes weighted by the current belief (mu, sigma).
                 future_value_prob = _bellman_expectation(values[i - 1], volume_space, current_overlap_probs, initial_belief_mu, initial_belief_sigma, observation_count)
-                future_values = linear_interp(dose_space, future_value_prob, future_doses)
-                values_actual_frac = -overlap_penalty + future_values + penalties
-                current_fraction_policy = delivered_doses_clipped[values_actual_frac.argmax(axis=1)]
-                actual_value = -actual_penalty + future_values + penalties
-                recommended_dose = delivered_doses_clipped[actual_value.argmax()]
+
+                # Future state value for each feasible action — each action leads to a different next accumulated dose.
+                # Interpolation is required because accumulated_dose is an external caller input that may not lie
+                # exactly on a dose_space grid point (unlike fraction 1, where future doses always land on-grid by construction).
+                future_values = linear_interp(dose_space, future_value_prob, future_accumulated_dose)  # value of state reached by each possible action
+
+                # Total state value for every (action, overlap) combination = future value minus immediate OAR cost.
+                # Used to determine the best action for each possible overlap outcome (the full policy).
+                state_values_full_grid = -overlap_penalty + future_values + overdose_penalties
+                current_fraction_policy = feasible_actions[state_values_full_grid.argmax(axis=1)]  # optimal action for each overlap bin
+
+                # Total state value for each action at the actually observed overlap = future value minus immediate OAR cost.
+                actual_value = -immediate_cost + future_values + overdose_penalties
+                recommended_dose = feasible_actions[actual_value.argmax()]  # optimal action given today's observed overlap
 
     physical_dose = np.round(recommended_dose, 2)
     penalty_added = penalty_calc_single(physical_dose, min_dose, observed_overlap)
