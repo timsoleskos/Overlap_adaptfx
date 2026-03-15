@@ -8,9 +8,6 @@ grids so that the DP value tables can be indexed directly.
 
 Branch probabilities _P_BELIEF[mi, si, j] = P(overlap in bin j | belief (mu_grid[mi],
 sigma_grid[si])) are precomputed once at module load and reused across all calls.
-
-This module is designed to be replaced in Stage B when a richer posterior (e.g. NIG)
-replaces the current Gaussian belief model.
 """
 
 import numpy as np
