@@ -252,7 +252,10 @@ def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, 
 
     Returns:
         list: [policies, current_fraction_policy, volume_space, physical_dose, penalty_added,
-               values, dose_space, current_overlap_probs, final_penalty]
+               values, dose_space, current_overlap_probs, optimal_state_value]
+              where optimal_state_value = np.max(actual_value) = the best total expected OAR cost
+              from this fraction to the end of treatment (negative value; less negative = better).
+              penalty_added = the immediate OAR cost incurred at this fraction for the recommended dose.
     """
     prescribed_dose = number_of_fractions * mean_dose  # total prescribed dose (Gy)
     observed_overlap = volumes[-1]  # overlap observed at the current fraction
@@ -431,8 +434,8 @@ def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, 
 
     physical_dose = np.round(recommended_dose, 2)
     penalty_added = penalty_calc_single(physical_dose, min_dose, observed_overlap)
-    final_penalty = np.max(actual_value) - penalty_added # TODO: Address variable name
-    return [policies, current_fraction_policy, volume_space, physical_dose, penalty_added, values, dose_space, current_overlap_probs, final_penalty]
+    optimal_state_value = np.max(actual_value)  # best total expected OAR cost from this fraction to end of treatment (negative; less negative = better)
+    return [policies, current_fraction_policy, volume_space, physical_dose, penalty_added, values, dose_space, current_overlap_probs, optimal_state_value]
     
    
 def adaptfx_full(volumes: list, number_of_fractions: int = DEFAULT_NUMBER_OF_FRACTIONS, min_dose: float = DEFAULT_MIN_DOSE, max_dose: float = DEFAULT_MAX_DOSE, mean_dose: float = DEFAULT_MEAN_DOSE, dose_steps: float = DEFAULT_DOSE_STEPS, alpha: float = DEFAULT_ALPHA, beta:float = DEFAULT_BETA):

@@ -113,7 +113,7 @@ class TestAdaptiveFractionationCore:
         
         # Unpack and verify types
         [policies, policies_overlap, volume_space, physical_dose, 
-         penalty_added, values, dose_space, probabilities, final_penalty] = result
+         penalty_added, values, dose_space, probabilities, optimal_state_value] = result
         
         assert isinstance(policies, np.ndarray), "Policies should be numpy array"
         assert isinstance(volume_space, np.ndarray), "Volume space should be numpy array"
@@ -600,12 +600,14 @@ class TestCoreAdaptfxGoldenRegression:
         volumes = np.array([0.41, 2.37, 0.68, 2.67, 1.62, 1.27])
         expected_physical_doses = np.array([6.5, 10.0, 6.5, 8.5, 8.5])
         expected_penalties_added = np.array([1.3775625, 6.256, 1.5519375, 7.340625, 5.7546875])
+        # optimal_state_value = np.max(actual_value): best total expected OAR cost from this fraction onwards.
+        # Last fraction is 0.0 since actual_value = np.zeros(1) when no future fractions remain.
         expected_final_penalties = np.array([
-            -24.62363530241796,
-            -21.59782135827345,
-            -16.23532342666412,
-            -21.769918729122907,
-            -5.754687499999999,
+            -23.24607280241796,
+            -15.34182135827345,
+            -14.683385926664121,
+            -14.429293729122907,
+            0.0,
         ])
 
         accumulated_dose = 0.0

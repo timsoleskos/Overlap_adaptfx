@@ -285,7 +285,7 @@ def assert_algorithm_output(result, expected_length=9):
     
     # Unpack and check types
     [policies, policies_overlap, volume_space, physical_dose, 
-     penalty_added, values, dose_space, probabilities, final_penalty] = result
+     penalty_added, values, dose_space, probabilities, optimal_state_value] = result
     
     assert isinstance(policies, np.ndarray), "Policies should be numpy array"
     assert isinstance(policies_overlap, np.ndarray), "Policies overlap should be numpy array" 
@@ -295,7 +295,7 @@ def assert_algorithm_output(result, expected_length=9):
     assert isinstance(values, np.ndarray), "Values should be numpy array"
     assert isinstance(dose_space, np.ndarray), "Dose space should be numpy array"
     assert isinstance(probabilities, np.ndarray), "Probabilities should be numpy array"
-    assert isinstance(final_penalty, (float, np.floating)), "Final penalty should be scalar"
+    assert isinstance(optimal_state_value, (float, np.floating)), "Final penalty should be scalar"
 
 
 # Test data generators
