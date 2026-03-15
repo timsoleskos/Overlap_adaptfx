@@ -98,7 +98,7 @@ class TestAdaptiveFractionationCore:
         accumulated_dose = 0.0
         
         result = adaptive_fractionation_core(
-            fraction=fraction,
+            fraction_index_today=fraction,
             volumes=volumes,
             accumulated_dose=accumulated_dose,
             number_of_fractions=DEFAULT_NUMBER_OF_FRACTIONS,
@@ -133,7 +133,7 @@ class TestAdaptiveFractionationCore:
             volumes_up_to_fraction = sample_volumes[:fraction+1]  # Include planning + fractions up to current
             
             result = adaptive_fractionation_core(
-                fraction=fraction,
+                fraction_index_today=fraction,
                 volumes=volumes_up_to_fraction,
                 accumulated_dose=accumulated_dose,
                 number_of_fractions=5,
@@ -162,7 +162,7 @@ class TestAdaptiveFractionationCore:
         accumulated_dose = 32.0  # Assuming 4 fractions @ 8 Gy each
         
         result = adaptive_fractionation_core(
-            fraction=5,
+            fraction_index_today=5,
             volumes=sample_volumes,  # All volumes
             accumulated_dose=accumulated_dose,
             number_of_fractions=5,
@@ -188,7 +188,7 @@ class TestAdaptiveFractionationCore:
         
         # Test with different min/max doses
         result_tight = adaptive_fractionation_core(
-            fraction=1,
+            fraction_index_today=1,
             volumes=volumes,
             accumulated_dose=0.0,
             min_dose=7.0,
@@ -197,7 +197,7 @@ class TestAdaptiveFractionationCore:
         )
         
         result_loose = adaptive_fractionation_core(
-            fraction=1,
+            fraction_index_today=1,
             volumes=volumes,
             accumulated_dose=0.0,
             min_dose=5.0,
@@ -216,7 +216,7 @@ class TestAdaptiveFractionationCore:
         volumes = sample_volumes[:2]
         
         result = adaptive_fractionation_core(
-            fraction=1,
+            fraction_index_today=1,
             volumes=volumes,
             accumulated_dose=0.0,
             dose_steps=0.5  # Different step size
@@ -386,7 +386,7 @@ class TestPrecomputePlan:
         volumes = sample_volumes[:3]  # First 3 volumes
         
         result = precompute_plan(
-            fraction=2,
+            fraction_index_today=2,
             volumes=volumes,
             accumulated_dose=6,
             number_of_fractions=5
@@ -456,7 +456,7 @@ class TestPrecomputePlan:
             accumulated_dose = (fraction - 1) * 8.0  # Assume 8 Gy per previous fraction
             
             result = precompute_plan(
-                fraction=fraction,
+                fraction_index_today=fraction,
                 volumes=volumes,
                 accumulated_dose=accumulated_dose
             )
@@ -508,7 +508,7 @@ class TestCoreAdaptfxIntegration:
                 volumes_subset = sample_volumes_array
             
             core_result = adaptive_fractionation_core(
-                fraction=fraction,
+                fraction_index_today=fraction,
                 volumes=volumes_subset,
                 accumulated_dose=accumulated_dose,
                 number_of_fractions=5,
@@ -615,7 +615,7 @@ class TestCoreAdaptfxGoldenRegression:
 
         for fraction in range(1, 6):
             result = adaptive_fractionation_core(
-                fraction=fraction,
+                fraction_index_today=fraction,
                 volumes=volumes[: fraction + 1],
                 accumulated_dose=accumulated_dose,
                 number_of_fractions=5,
@@ -661,7 +661,7 @@ class TestCoreAdaptfxEdgeCases:
         high_accumulated_dose = 35.0  # Very high for early fraction
         
         result = adaptive_fractionation_core(
-            fraction=2,
+            fraction_index_today=2,
             volumes=volumes,
             min_dose = 6.0,
             accumulated_dose=high_accumulated_dose,
@@ -680,7 +680,7 @@ class TestCoreAdaptfxEdgeCases:
         low_accumulated_dose = 6.0  # Very low for early fraction
 
         result = adaptive_fractionation_core(
-            fraction=4,
+            fraction_index_today=4,
             volumes=volumes,
             min_dose = 6.0,
             max_dose = 10.0,
