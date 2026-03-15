@@ -14,10 +14,7 @@ The tests verify:
 
 import pytest
 import numpy as np
-from scipy.stats import norm
 from adaptive_fractionation_overlap.helper_functions import (
-    data_fit,
-    hyperparam_fit,
     std_calc,
     get_state_space,
     probdist,
@@ -201,7 +198,7 @@ class TestProbdist:
     
     def test_probdist_basic(self):
         """Test basic probability distribution calculation."""
-        X = norm(loc=3.0, scale=1.0)
+        X = (3.0, 1.0)
         state_space = np.linspace(0, 6, 21)
         
         result = probdist(X, state_space)
@@ -215,7 +212,7 @@ class TestProbdist:
     
     def test_probdist_properties(self):
         """Test mathematical properties of probability distribution."""
-        X = norm(loc=5.0, scale=1.5)
+        X = (5.0, 1.5)
         state_space = np.linspace(0, 10, 51)
         
         result = probdist(X, state_space)
@@ -236,41 +233,6 @@ class TestProbdist:
         
         assert left_increasing or len(left_side) <= 1, "Left side should be non-decreasing"
         assert right_decreasing or len(right_side) <= 1, "Right side should be non-increasing"
-
-
-class TestDataFittingFunctions:
-    """Test data fitting and hyperparameter functions."""
-    
-    def test_data_fit_basic(self, sample_volumes):
-        """Test basic data fitting."""
-        result = data_fit(sample_volumes)
-        
-        # data_fit returns a scipy distribution object, not parameters
-        assert hasattr(result, 'pdf'), "Result should be a distribution with pdf method"
-        assert hasattr(result, 'mean'), "Result should be a distribution with mean method"
-        
-        # Should be able to compute basic statistics
-        try:
-            mean_val = result.mean()
-            assert np.isfinite(mean_val), "Mean should be finite"
-        except Exception as e:
-            pytest.fail(f"Failed to compute mean: {e}")
-    
-    def test_hyperparam_fit_basic(self, evaluation_patient_data):
-        """Test hyperparameter fitting."""
-        # hyperparam_fit expects 2D data (patients × measurements)
-        patient_data = np.array(evaluation_patient_data['overlaps'])  # 3 patients × 6 measurements
-        
-        result = hyperparam_fit(patient_data)
-        
-        # Should return hyperparameters
-        assert isinstance(result, (tuple, list, np.ndarray)), "Result should be a sequence"
-        assert len(result) == 2, "Should return exactly 2 hyperparameters (alpha, beta)"
-        
-        # Hyperparameters should be positive for gamma distribution
-        alpha, beta = result
-        assert alpha > 0, f"Alpha {alpha} should be positive"
-        assert beta > 0, f"Beta {beta} should be positive"
 
 
 class TestPlottingFunctions:
@@ -346,7 +308,7 @@ class TestHelperFunctionsIntegration:
         for patient_overlaps in evaluation_patient_data['overlaps']:
             volumes = np.array(patient_overlaps)
             std_val = std_calc(volumes, DEFAULT_ALPHA, DEFAULT_BETA)
-            distribution = norm(loc=volumes.mean(), scale=std_val)
+            distribution = (volumes.mean(), std_val)
             
             state_space = get_state_space(distribution)
             
@@ -384,15 +346,15 @@ class TestHelperFunctionsEdgeCases:
         assert np.isfinite(result), "Should return finite result"
     
     def test_get_state_space_extreme_distribution(self):
-        """Test state space with extreme distribution parameters."""
+        """Test state space with extreme distribution parameter tuples."""
         # Very small scale
-        small_scale_dist = norm(loc=2.0, scale=0.01)
+        small_scale_dist = (2.0, 0.01)
         result_small = get_state_space(small_scale_dist)
         
         assert len(result_small) > 0, "Should generate state space for small scale"
         
         # Very large scale
-        large_scale_dist = norm(loc=2.0, scale=10.0)
+        large_scale_dist = (2.0, 10.0)
         result_large = get_state_space(large_scale_dist)
         
         assert len(result_large) > 0, "Should generate state space for large scale"

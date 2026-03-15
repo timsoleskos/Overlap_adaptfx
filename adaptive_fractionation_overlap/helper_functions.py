@@ -3,52 +3,31 @@
 In this file are all helper functions that are needed for the adaptive fractionation calculation
 """
 
+__all__ = [
+    "std_calc",
+    "get_state_space",
+    "probdist",
+    "penalty_calc_single",
+    "penalty_calc_matrix",
+    "max_action",
+    "actual_policy_plotter",
+    "analytic_plotting",
+    "min_dose_to_deliver",
+    "build_dose_decision_lines",
+]
+
 import numpy as np
-from scipy.stats import norm, gamma
+from scipy.stats import norm
+import matplotlib
 import matplotlib.pyplot as plt
 from .constants import SLOPE, INTERCEPT
 
 
 
-def data_fit(data):
-    """
-    This function fits a normal distribution for the given data
-
-    Parameters
-    ----------
-    data : array or list
-        list with n elements for each observed overlap volume
-
-    Returns
-    -------
-    frozen function
-        normal distribution
-    """
-    mu, std = norm.fit(data)
-    return norm(loc = mu, scale = std)
-
-def hyperparam_fit(data):
-    """
-    This function fits the alpha and beta value for the prior
-
-    Parameters
-    ----------
-    data : array
-        a nxk matrix with n the amount of patints and k the amount of sparing factors per patient.
-
-    Returns
-    -------
-    list
-        alpha and beta hyperparameter.
-    """
-    vars = data.var(axis=1)
-    alpha, loc, beta = gamma.fit(vars, floc=0)
-    return [alpha, beta]
-
 def std_calc(measured_data, alpha, beta):
     """
     calculates the most likely standard deviation for a list of k overlap volumes and a gamma prior
-    measured_data: list/array with k sparing factors
+    measured_data: list/array with k overlap volumes
 
     Parameters
     ----------
@@ -57,7 +36,7 @@ def std_calc(measured_data, alpha, beta):
     alpha : float
         shape of gamma distribution
     beta : float
-        scale of gamma distrinbution
+        scale of gamma distribution
 
     Returns
     -------
@@ -85,16 +64,17 @@ def get_state_space(distribution):
 
     Parameters
     ----------
-    distribution : frozen function
-        normal distribution
+    distribution : tuple(float, float)
+        (mean, std) parameters of a normal distribution
 
     Returns
     -------
-    state_space: Array spanning from the 2% percentile to the 98% percentile with a normalized spacing to define 100 states
+    state_space: Array spanning from the 0.1% percentile to the 99.9% percentile with a normalized spacing to define 200 states
         np.array
     """
-    lower_bound = distribution.ppf(0.001)
-    upper_bound = distribution.ppf(0.999)
+    mean_volume, std_volume = distribution
+    lower_bound = norm.ppf(0.001, loc=mean_volume, scale=std_volume)
+    upper_bound = norm.ppf(0.999, loc=mean_volume, scale=std_volume)
 
     return np.linspace(lower_bound,upper_bound,200)
 
@@ -104,20 +84,21 @@ def probdist(X,state_space):
 
     Parameters
     ----------
-    X : scipy.stats._distn_infrastructure.rv_frozen
-        distribution function.
+    X : tuple(float, float)
+        (mean, std) parameters of a normal distribution.
 
     Returns
     -------
     prob : np.array
-        array with probabilities for each sparing factor.
+        array with probabilities for each overlap volume.
 
     """
     spacing = state_space[1]-state_space[0]
     upper_bounds = state_space + spacing/2
     lower_bounds = state_space - spacing/2
-    prob = X.cdf(upper_bounds) - X.cdf(lower_bounds)
-    return np.array(prob) #note: this will only add up to roughly 96% instead of 100%
+    mean_volume, std_volume = X
+    prob = norm.cdf(upper_bounds, loc=mean_volume, scale=std_volume) - norm.cdf(lower_bounds, loc=mean_volume, scale=std_volume)
+    return prob #note: sum depends on how much of the distribution falls within state_space
 
 def penalty_calc_single(physical_dose, min_dose, actual_volume, intercept=INTERCEPT, slope=SLOPE):
     """
@@ -207,8 +188,8 @@ def max_action(accumulated_dose, dose_space, goal):
         gives the size of the resized actionspace to reach the prescribed tumor dose.
 
     """
-    max_action = min(max(dose_space), goal - accumulated_dose)
-    sizer = np.argmin(np.abs(dose_space - max_action))
+    max_deliverable = min(max(dose_space), goal - accumulated_dose)
+    sizer = np.argmin(np.abs(dose_space - max_deliverable))
     sizer = 1 if sizer == 0 else sizer #Make sure that at least the minimum dose is delivered
     return sizer
 
@@ -252,10 +233,11 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
     Returns:
         matplotlib.fig: returns a figure with all values plotted as subfigures
     """
+    values = values.copy()
     values[values < -10000000000] = 10000000000
     min_Value = np.min(values)
     values[values == 10000000000] = 1.1*min_Value
-    colormap = plt.cm.get_cmap('jet')
+    colormap = matplotlib.colormaps['jet']
     number_of_plots = number_of_fractions - fraction
     fig, axs = plt.subplots(1,number_of_plots, figsize = (number_of_plots*10,10))
     if number_of_plots > 1:
@@ -278,7 +260,7 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
 
     return fig
 
-def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed_dose: float, min_dose: float, max_dose: float = None) -> float:
+def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed_dose: float, min_dose: float, max_dose: float) -> float:
     """
     This function calculates the minimal dose that needs to be delivered in the current fraction to still reach the goal
 
@@ -290,8 +272,8 @@ def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed
         number of fractions left including the current one
     min_dose : float
         minimal dose that can be delivered in one fraction
-    max_dose : float, optional
-        maximal dose that can be delivered in one fraction, by default None
+    max_dose : float
+        maximal dose that can be delivered in one fraction
 
     Returns
     -------
