@@ -115,7 +115,7 @@ if st.button('compute optimal dose', help = 'takes the given inputs from above t
     overlaps_str = overlaps_str.split()
     overlaps = [float(i) for i in overlaps_str]
     if function == 'actual fraction calculation':
-        [policies, policies_overlap, volume_space, physical_dose, penalty_added, values, dose_space, probabilities, optimal_state_value] = af.adaptive_fractionation_core(fraction = int(actual_fraction),volumes = np.array(overlaps), accumulated_dose = float(accumulated_dose), number_of_fractions = int(fractions), min_dose = float(minimum_dose), max_dose = float(maximum_dose), mean_dose = float(mean_dose), dose_steps = float(dose_steps))
+        [policies, policies_overlap, volume_space, physical_dose, penalty_added, values, dose_space, probabilities, optimal_state_value] = af.adaptive_fractionation_core(fraction = int(actual_fraction),volumes = np.array(overlaps), accumulated_dose = float(accumulated_dose), number_of_fractions = int(fractions), min_dose = float(minimum_dose), max_dose = float(maximum_dose), mean_dose = float(mean_dose), dose_steps = float(dose_steps), alpha = DEFAULT_ALPHA, beta = DEFAULT_BETA)
         left2, right2 = st.columns(2)
         with left2:
             actual_value = 'Goal can not be reached' if optimal_state_value <= _INFEASIBLE_SENTINEL else str(np.round(optimal_state_value,1)) + 'ccGy'

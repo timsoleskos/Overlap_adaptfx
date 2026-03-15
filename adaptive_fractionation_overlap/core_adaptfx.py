@@ -229,9 +229,7 @@ def _fill_values_policies(future_values_masked_action_last, overlap_penalty, fla
                     policies_state[d, j, m, s] = action_space[ai[d, m, s]]                           # record the corresponding optimal dose action
 
 
-# TODO: remove default parameter values — callers should always pass explicit values;
-#       replace defaults with raised exceptions (TypeError/ValueError) when a value is missing.
-def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, accumulated_dose: float, number_of_fractions: int = DEFAULT_NUMBER_OF_FRACTIONS, min_dose: float = DEFAULT_MIN_DOSE, max_dose: float = DEFAULT_MAX_DOSE, mean_dose:float = DEFAULT_MEAN_DOSE, dose_steps: float = DEFAULT_DOSE_STEPS, alpha: float = DEFAULT_ALPHA, beta:float = DEFAULT_BETA):
+def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, accumulated_dose: float, number_of_fractions: int, min_dose: float, max_dose: float, mean_dose: float, dose_steps: float, alpha: float, beta: float):
     """Belief-state DP solver. Computes the recommended dose for the current fraction.
 
     Optimizes fractionation by minimizing expected PTV underdosage cost: lower dose

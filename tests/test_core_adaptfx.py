@@ -104,7 +104,10 @@ class TestAdaptiveFractionationCore:
             number_of_fractions=DEFAULT_NUMBER_OF_FRACTIONS,
             min_dose=DEFAULT_MIN_DOSE,
             max_dose=DEFAULT_MAX_DOSE,
-            mean_dose=DEFAULT_MEAN_DOSE
+            mean_dose=DEFAULT_MEAN_DOSE,
+            dose_steps=DEFAULT_DOSE_STEPS,
+            alpha=DEFAULT_ALPHA,
+            beta=DEFAULT_BETA,
         )
         
         # Verify result structure (should return 9 elements)
@@ -139,7 +142,10 @@ class TestAdaptiveFractionationCore:
                 number_of_fractions=5,
                 min_dose=6.0,
                 max_dose=10.0,
-                mean_dose=8.0
+                mean_dose=8.0,
+                dose_steps=DEFAULT_DOSE_STEPS,
+                alpha=DEFAULT_ALPHA,
+                beta=DEFAULT_BETA,
             )
             
             # Extract physical dose
@@ -168,7 +174,10 @@ class TestAdaptiveFractionationCore:
             number_of_fractions=5,
             min_dose=6,
             max_dose=10,
-            mean_dose=8
+            mean_dose=8,
+            dose_steps=DEFAULT_DOSE_STEPS,
+            alpha=DEFAULT_ALPHA,
+            beta=DEFAULT_BETA,
         )
         
         physical_dose = result[3]
@@ -191,18 +200,26 @@ class TestAdaptiveFractionationCore:
             fraction_index_today=1,
             volumes=volumes,
             accumulated_dose=0.0,
+            number_of_fractions=DEFAULT_NUMBER_OF_FRACTIONS,
             min_dose=7.0,
             max_dose=9.0,
-            mean_dose=8.0
+            mean_dose=8.0,
+            dose_steps=DEFAULT_DOSE_STEPS,
+            alpha=DEFAULT_ALPHA,
+            beta=DEFAULT_BETA,
         )
-        
+
         result_loose = adaptive_fractionation_core(
             fraction_index_today=1,
             volumes=volumes,
             accumulated_dose=0.0,
+            number_of_fractions=DEFAULT_NUMBER_OF_FRACTIONS,
             min_dose=5.0,
             max_dose=11.0,
-            mean_dose=8.0
+            mean_dose=8.0,
+            dose_steps=DEFAULT_DOSE_STEPS,
+            alpha=DEFAULT_ALPHA,
+            beta=DEFAULT_BETA,
         )
         
         dose_tight = result_tight[3]
@@ -219,7 +236,13 @@ class TestAdaptiveFractionationCore:
             fraction_index_today=1,
             volumes=volumes,
             accumulated_dose=0.0,
-            dose_steps=0.5  # Different step size
+            number_of_fractions=DEFAULT_NUMBER_OF_FRACTIONS,
+            min_dose=DEFAULT_MIN_DOSE,
+            max_dose=DEFAULT_MAX_DOSE,
+            mean_dose=DEFAULT_MEAN_DOSE,
+            dose_steps=0.5,
+            alpha=DEFAULT_ALPHA,
+            beta=DEFAULT_BETA,
         )
         
         dose_space = result[6]
@@ -514,7 +537,10 @@ class TestCoreAdaptfxIntegration:
                 number_of_fractions=5,
                 min_dose=6.0,
                 max_dose=10.0,
-                mean_dose=8.0
+                mean_dose=8.0,
+                dose_steps=DEFAULT_DOSE_STEPS,
+                alpha=DEFAULT_ALPHA,
+                beta=DEFAULT_BETA,
             )
             
             physical_dose = core_result[3]
@@ -625,6 +651,8 @@ class TestCoreAdaptfxGoldenRegression:
                 max_dose=10.0,
                 mean_dose=8.0,
                 dose_steps=0.5,
+                alpha=DEFAULT_ALPHA,
+                beta=DEFAULT_BETA,
             )
             physical_dose = result[3]
             actual_physical_doses.append(physical_dose)
@@ -665,10 +693,14 @@ class TestCoreAdaptfxEdgeCases:
         result = adaptive_fractionation_core(
             fraction_index_today=2,
             volumes=volumes,
-            min_dose = 6.0,
             accumulated_dose=high_accumulated_dose,
             number_of_fractions=5,
-            mean_dose=8.0
+            min_dose=6.0,
+            max_dose=DEFAULT_MAX_DOSE,
+            mean_dose=8.0,
+            dose_steps=DEFAULT_DOSE_STEPS,
+            alpha=DEFAULT_ALPHA,
+            beta=DEFAULT_BETA,
         )
         
         physical_dose = result[3]
@@ -684,11 +716,14 @@ class TestCoreAdaptfxEdgeCases:
         result = adaptive_fractionation_core(
             fraction_index_today=4,
             volumes=volumes,
-            min_dose = 6.0,
-            max_dose = 10.0,
             accumulated_dose=low_accumulated_dose,
             number_of_fractions=5,
-            mean_dose=8.0
+            min_dose=6.0,
+            max_dose=10.0,
+            mean_dose=8.0,
+            dose_steps=DEFAULT_DOSE_STEPS,
+            alpha=DEFAULT_ALPHA,
+            beta=DEFAULT_BETA,
         )
         
         physical_dose = result[3]
