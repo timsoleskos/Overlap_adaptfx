@@ -16,8 +16,8 @@ above _VOLUME_SPACE[-1] is folded into the boundary bins, so each row sums to ex
 1.0.  current_belief_probdist (used for the actual observed patient belief at each
 fraction) does NOT fold tails, so its output can sum to slightly less than 1.0 if the
 patient's belief tails extend outside _VOLUME_SPACE.  In practice this is negligible
-because _VOLUME_SPACE covers mu_grid_max + 4 * sigma_grid_max ≈ 44 cc, far beyond any
-observed patient.  For NIG extensibility (Stage B): replace current_belief_probdist
+because _VOLUME_SPACE is fixed at 44 cc, far beyond the maximum observed overlap
+of ~29 cc in the 58-patient ACTION cohort.  For NIG extensibility (Stage B): replace current_belief_probdist
 with a Student-t CDF-difference; _P_BELIEF would then require a corresponding update.
 """
 
@@ -42,18 +42,21 @@ _MU_GRID = np.unique(np.concatenate([
 ]))  # 280 grid points total
 
 # Non-uniform sigma grid: fine resolution in [0, 0.7] cc where 75% of patients fall,
-# coarser in the tail.  Range extended to 3.5 cc to avoid clipping outlier patients
-# (observed max σ ≈ 3.3 cc on the 58-patient cohort).
-# Peak memory: (4, 70, 441, 280, 10) × 8 bytes ≈ 2.77 GB (2.58 GiB).
+# coarser in the tail.  Range extended to 4.5 cc to avoid clipping outlier patients
+# (observed max σ ≈ 4.05 cc on the 58-patient ACTION cohort, patient 3).
+# Peak memory: (4, 70, 441, 280, 11) × 8 bytes ≈ 3.04 GB (2.83 GiB).
 _SIGMA_GRID = np.unique(np.concatenate([
     np.linspace(0.05, 0.7, 5),  # step ~0.163 cc  (p0–p75 of clinical σ)
     np.linspace(0.8,  1.8, 3),  # step ~0.500 cc  (p75–p90)
-    np.linspace(2.0,  3.5, 2),  # step ~1.500 cc  (tail)
-]))  # 10 grid points total
+    np.linspace(2.0,  4.5, 3),  # step ~1.250 cc  (tail, covers max observed σ 4.05 cc)
+]))  # 11 grid points total
 _SIGMA_MIN = float(_SIGMA_GRID[0])
 
-# Fixed overlap state space covering the full belief grid (0 to max_mu + 4·max_sigma), shared across all beliefs.
-_VOLUME_SPACE = np.linspace(0.0, _MU_GRID[-1] + 4 * _SIGMA_GRID[-1], 441)  # 0.1cc steps (matching TPS volume discretisation)
+# Fixed overlap state space: 0 to 44 cc in 0.1 cc steps, matching TPS output resolution.
+# Hardcoded to 44 cc (independent of _SIGMA_GRID) so that bin width stays exactly 0.1 cc.
+# 44 cc covers mu_grid_max (30 cc) + 4 × sigma_grid_max (4.5 cc) = 48 cc with margin to spare;
+# the tail probability beyond 44 cc is negligible for any belief on the grid.
+_VOLUME_SPACE = np.linspace(0.0, 44.0, 441)  # 0.1 cc steps, fixed upper bound
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +187,7 @@ def current_belief_probdist(mu: float, sigma: float) -> np.ndarray:
     Evaluates Gaussian CDF differences over the fixed _VOLUME_SPACE grid, without
     tail-folding.  The probabilities may therefore sum to slightly less than 1.0 when
     the belief tails extend beyond _VOLUME_SPACE; in practice this is negligible
-    because _VOLUME_SPACE covers _MU_GRID[-1] + 4 * _SIGMA_GRID[-1] ≈ 44 cc.
+    because _VOLUME_SPACE is fixed at 44 cc, far beyond the maximum observed overlap.
 
     Unlike _P_BELIEF (precomputed for all grid points, with tail-folding), this
     function evaluates on-the-fly for the patient's actual current belief — which

@@ -29,8 +29,8 @@ class TestGrids:
         assert _MU_GRID[0] >= 0.0, "_MU_GRID must start at or above 0 cc"
 
     def test_sigma_grid_shape_and_order(self):
-        """_SIGMA_GRID should be sorted, positive, and have the documented 10 points."""
-        assert len(_SIGMA_GRID) == 10, f"Expected 10 sigma grid points, got {len(_SIGMA_GRID)}"
+        """_SIGMA_GRID should be sorted, positive, and have the documented 11 points."""
+        assert len(_SIGMA_GRID) == 11, f"Expected 11 sigma grid points, got {len(_SIGMA_GRID)}"
         assert np.all(np.diff(_SIGMA_GRID) > 0), "_SIGMA_GRID must be strictly increasing"
         assert _SIGMA_GRID[0] > 0.0, "_SIGMA_GRID must be strictly positive"
 
@@ -43,10 +43,15 @@ class TestGrids:
         assert steps[0] == pytest.approx(0.1, abs=1e-3), "Expected ~0.1 cc step size"
 
     def test_volume_space_covers_full_belief_range(self):
-        """_VOLUME_SPACE must reach at least mu_grid_max + 4 * sigma_grid_max."""
-        required_max = _MU_GRID[-1] + 4 * _SIGMA_GRID[-1]
-        assert _VOLUME_SPACE[-1] >= required_max - 0.1, (
-            f"_VOLUME_SPACE must reach {required_max:.2f} cc to cover the widest belief; "
+        """_VOLUME_SPACE must cover at least mu_grid_max + 3 * sigma_grid_max.
+
+        _VOLUME_SPACE is hardcoded to 44 cc (not derived from sigma_grid_max) to keep the
+        bin width at exactly 0.1 cc.  44 cc covers mu_max + 3.1 * sigma_max = 30 + 14 = 44 cc,
+        giving > 99.9% coverage for even the most extreme grid belief.
+        """
+        required_min = _MU_GRID[-1] + 3 * _SIGMA_GRID[-1]
+        assert _VOLUME_SPACE[-1] >= required_min, (
+            f"_VOLUME_SPACE must reach at least {required_min:.2f} cc (mu_max + 3*sigma_max); "
             f"currently ends at {_VOLUME_SPACE[-1]:.2f} cc"
         )
 

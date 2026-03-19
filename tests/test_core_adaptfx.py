@@ -629,9 +629,9 @@ class TestCoreAdaptfxGoldenRegression:
         # optimal_state_value = np.max(actual_value): best total expected OAR cost from this fraction onwards.
         # Last fraction is 0.0 since actual_value = np.zeros(1) when no future fractions remain.
         expected_final_penalties = np.array([
-            -23.24607280241796,
-            -15.34182135827345,
-            -14.683385926664121,
+            -23.246078172110224,
+            -15.341822539887957,
+            -14.683385931116208,
             -14.429293729122907,
             0.0,
         ])
