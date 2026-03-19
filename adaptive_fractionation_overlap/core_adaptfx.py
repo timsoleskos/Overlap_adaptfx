@@ -109,13 +109,13 @@ def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, 
         fraction_index_today (int): today's fraction number (1-indexed).
         volumes (np.ndarray): all overlap volumes observed so far, including the current fraction.
         accumulated_dose (float): total physical dose delivered to PTV before this fraction (Gy).
-        number_of_fractions (int, optional): total number of fractions. Defaults to 5.
-        min_dose (float, optional): minimum physical dose per fraction (Gy). Defaults to 7.5.
-        max_dose (float, optional): maximum physical dose per fraction (Gy). Defaults to 9.5.
-        mean_dose (float, optional): prescribed mean dose per fraction (Gy). Defaults to 8.
-        dose_steps (float, optional): dose grid resolution (Gy). Defaults to 0.1.
-        alpha (float, optional): shape parameter of the gamma prior on sigma. Defaults to 1.838.
-        beta (float, optional): scale parameter of the gamma prior on sigma. Defaults to 0.265.
+        number_of_fractions (int): total number of fractions.
+        min_dose (float): minimum physical dose per fraction (Gy).
+        max_dose (float): maximum physical dose per fraction (Gy).
+        mean_dose (float): prescribed mean dose per fraction (Gy).
+        dose_steps (float): dose grid resolution (Gy).
+        alpha (float): shape parameter of the gamma prior on sigma.
+        beta (float): scale parameter of the gamma prior on sigma.
 
     Returns:
         list: [policies, current_fraction_policy, volume_space, physical_dose, penalty_added,
@@ -194,7 +194,7 @@ def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, 
                     min_dose_reserved_for_future = (number_of_fractions - fraction_number) * min_dose  # minimum dose budget that must be reserved for all remaining fractions after this one
                     max_allowed_actions = np.minimum(action_space[-1], prescribed_dose - dose_space - min_dose_reserved_for_future)  # for each accumulated dose state, the largest single-fraction dose that still leaves enough budget for future fractions
                     max_action_indices = np.abs(action_space[None, :] - max_allowed_actions[:, None]).argmin(axis=1)  # index into action_space of the largest allowed dose for each accumulated dose state
-                    max_action_indices = np.where(max_action_indices == 0, 1, max_action_indices)  # clamp to at least index 1 so that every dose state has at least one valid action available
+                    max_action_indices = np.where(max_action_indices == 0, 1, max_action_indices)  # clamp to at least index 1 so that every dose state has at least two valid actions available
                     valid_actions = (np.arange(action_space.size)[None, :] <= max_action_indices[:, None])  # boolean mask: True where the action can be taken without exceeding the prescribed dose; shape: (N_dose, N_action)
 
                     # ----- Look up future_value_prob_full at each future accumulated dose -----
@@ -282,7 +282,7 @@ def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, 
 
             elif fraction_index_today == number_of_fractions: # Today's fraction is the last (action is fixed: deliver exactly the remaining dose).
                 recommended_dose = np.clip(remaining_ptv_dose, min_dose, max_dose)  # Clamp remaining dose to daily prescription limits
-                actual_value = np.zeros(1)  # total state value = 0; no future fractions remain and the immediate cost is subtracted separately via penalty_added on line 434
+                actual_value = np.zeros(1)  # total state value = 0; no future fractions remain and the immediate cost is accounted for separately via penalty_added
 
             else: # Current fraction is in the middle (not first, not last).
                 
@@ -338,14 +338,17 @@ def adaptfx_full(volumes: list, number_of_fractions: int = DEFAULT_NUMBER_OF_FRA
 
     Args:
         volumes (list): list of all volume overlaps observed
-        number_of_fractions (float, optional): number of fractions delivered. Defaults to 5.
-        min_dose (float, optional): minimum phyical dose delivered in each fraction. Defaults to 7.5.
-        max_dose (float, optional): maximum dose delivered in each fraction. Defaults to 9.5.
-        mean_dose (int, optional): mean dose to be delivered over all fractions. Defaults to 8.
+        number_of_fractions (int, optional): number of fractions delivered. Defaults to 5.
+        min_dose (float, optional): minimum physical dose delivered in each fraction (Gy). Defaults to 6.0.
+        max_dose (float, optional): maximum dose delivered in each fraction (Gy). Defaults to 10.0.
+        mean_dose (float, optional): mean dose to be delivered over all fractions (Gy). Defaults to 8.0.
+        dose_steps (float, optional): dose grid resolution (Gy). Defaults to 0.5.
+        alpha (float, optional): shape parameter of the gamma prior on sigma. Defaults to 1.072846744379587.
+        beta (float, optional): scale parameter of the gamma prior on sigma. Defaults to 0.7788684130749829.
 
     Returns:
         numpy arrays: physical dose (array with all optimal doses to be delivered),
-        accumullated_doses (array with the accumulated dose in each fraction),
+        accumulated_doses (array with the accumulated dose in each fraction),
         total_penalty (final penalty after fractionation if all suggested doses are applied)
     """
     physical_doses = np.zeros(number_of_fractions)
@@ -373,11 +376,12 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
         volumes (np.ndarray): list of all volume overlaps observed so far
         accumulated_dose (float): accumulated physical dose in tumor
         number_of_fractions (int, optional): number of fractions given in total. Defaults to 5.
-        min_dose (float, optional): minimum phyical dose delivered in each fraction. Defaults to 7.5.
-        max_dose (float, optional): maximum dose delivered in each fraction. Defaults to 9.5.
-        mean_dose (int, optional): mean dose to be delivered over all fractions. Defaults to 8.
-        alpha (float, optional): alpha value of gamma distribution. Defaults to 1.8380125313579265.
-        beta (float, optional): beta value of gamma distribution. Defaults to 0.2654168553532238.
+        min_dose (float, optional): minimum physical dose delivered in each fraction (Gy). Defaults to 6.0.
+        max_dose (float, optional): maximum dose delivered in each fraction (Gy). Defaults to 10.0.
+        mean_dose (float, optional): mean dose to be delivered over all fractions (Gy). Defaults to 8.0.
+        dose_steps (float, optional): dose grid resolution (Gy). Defaults to 0.5.
+        alpha (float, optional): shape parameter of the gamma prior on sigma. Defaults to 1.072846744379587.
+        beta (float, optional): scale parameter of the gamma prior on sigma. Defaults to 0.7788684130749829.
 
     Returns:
         pd.Dataframe, lists: Returns a dataframe with volumes and respective doses, and volumes and doses separated in two lists.

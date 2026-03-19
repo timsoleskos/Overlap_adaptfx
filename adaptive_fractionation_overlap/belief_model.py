@@ -33,7 +33,7 @@ _MU_GRID = np.unique(np.concatenate([
 # Non-uniform sigma grid: fine resolution in [0, 0.7] cc where 75% of patients fall,
 # coarser in the tail.  Range extended to 3.5 cc to avoid clipping outlier patients
 # (observed max σ ≈ 3.3 cc on the 58-patient cohort).
-# Peak memory: (4, 70, 441, 280, 10) × 8 bytes ≈ 2.75 GB.
+# Peak memory: (4, 70, 441, 280, 10) × 8 bytes ≈ 2.77 GB (2.58 GiB).
 _SIGMA_GRID = np.unique(np.concatenate([
     np.linspace(0.05, 0.7, 5),  # step ~0.163 cc  (p0–p75 of clinical σ)
     np.linspace(0.8,  1.8, 3),  # step ~0.500 cc  (p75–p90)
@@ -55,7 +55,7 @@ def _precompute_branch_probabilities():
     Uses CDF differences over each bin. Left/right tails are folded into the first/last
     bin so that probabilities sum to 1 for every belief.
     """
-    spacing = _VOLUME_SPACE[1] - _VOLUME_SPACE[0]  # bin width of the overlap grid (varies along the grid)
+    spacing = _VOLUME_SPACE[1] - _VOLUME_SPACE[0]  # bin width of the overlap grid (uniform, since _VOLUME_SPACE is linspace)
     upper_bounds = _VOLUME_SPACE + spacing / 2
     lower_bounds = _VOLUME_SPACE - spacing / 2
     # P(bin j | mu, sigma) = CDF(upper_bounds[j]) - CDF(lower_bounds[j]), broadcast over all (mu, sigma) pairs
@@ -151,8 +151,8 @@ def _bellman_expectation_full_grid(values_prev, observation_count):
     next_si = nearest_idx(sigma_prime, _SIGMA_GRID)
 
     # ----- Steps 2+3: accumulate probability-weighted future values in a j-loop -----
-    # This avoids materialising the full (N_dose, N_mu, N_sigma, N_overlap) = ~150 MB
-    # branch_vals array; instead each j-slice is ~0.75 MB and is processed on the fly.
+    # This avoids materialising the full (N_dose, N_mu, N_sigma, N_overlap) = ~660 MB
+    # branch_vals array; instead each j-slice is ~1.5 MB and is processed on the fly.
     next_b = next_mi * N_sigma + next_si  # flat belief index, shape (N_mu, N_sigma, N_overlap)
     vals_flat = values_prev.reshape(N_dose, N_overlap, -1)  # (N_dose, N_overlap, N_belief)
     future_value_prob_full = np.zeros((N_dose, N_mu, N_sigma))
