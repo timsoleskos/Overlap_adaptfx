@@ -122,12 +122,12 @@ class TestPenaltyCalcSingle:
 
 class TestPenaltyCalcMatrix:
     """Test the penalty_calc_matrix function."""
-    
+
     def test_penalty_calc_matrix_basic(self):
         """Test basic matrix penalty calculation."""
         doses = np.array([6.0, 7.0, 8.0, 9.0, 10.0])
         volumes = np.array([1.0, 2.0, 3.0, 4.0])
-        
+
         result = penalty_calc_matrix(
             delivered_doses=doses,
             volume_space=volumes,
@@ -135,30 +135,61 @@ class TestPenaltyCalcMatrix:
             intercept=INTERCEPT,
             slope=SLOPE
         )
-        
+
         # Result should be a 2D array
         assert isinstance(result, np.ndarray), "Result should be numpy array"
         assert result.ndim == 2, "Result should be 2D matrix"
         # Note: actual shape is (volumes, doses) not (doses, volumes)
         assert result.shape == (len(volumes), len(doses)), \
             f"Shape should be ({len(volumes)}, {len(doses)}), got {result.shape}"
-    
+
     def test_penalty_calc_matrix_properties(self):
         """Test mathematical properties of penalty matrix."""
         doses = np.linspace(6.0, 10.0, 5)
         volumes = np.linspace(0.5, 5.0, 4)
-        
+
         result = penalty_calc_matrix(doses, volumes, 6.0, INTERCEPT, SLOPE)
-        
+
         # All penalties should be non-negative (for doses >= min_dose)
         assert np.all(result >= 0), "All penalties should be non-negative"
-        
+
         # Penalties should generally increase with dose (for fixed volume)
         # Note: result shape is (volumes, doses), so we iterate over rows (volumes)
         for i in range(result.shape[0]):
             row = result[i, :]  # Penalties for volume i across all doses
             # Should be non-decreasing (allowing for floating point precision)
             assert np.all(np.diff(row) >= -1e-10), f"Penalties should increase with dose for volume {volumes[i]}"
+
+    def test_penalty_calc_matrix_below_min_dose_is_negative(self):
+        """penalty_calc_matrix does NOT zero out doses below min_dose — entries are negative.
+
+        Unlike penalty_calc_single (which returns 0 for dose < min_dose), penalty_calc_matrix
+        returns negative values for below-min-dose actions.  This is documented behaviour: the DP
+        caller masks or excludes those actions via valid_actions before the Numba kernel runs.
+        """
+        doses = np.array([4.0, 5.0])  # both below min_dose=6.0
+        volumes = np.array([1.0, 2.0, 3.0])
+
+        result = penalty_calc_matrix(delivered_doses=doses, volume_space=volumes, min_dose=6.0)
+
+        # All entries should be negative (dose excess is negative, linear term dominates)
+        assert np.all(result < 0), (
+            f"penalty_calc_matrix with dose < min_dose should return negative values; got {result}"
+        )
+
+    def test_penalty_calc_matrix_vs_single_consistency(self):
+        """penalty_calc_matrix and penalty_calc_single agree for doses >= min_dose."""
+        doses = np.array([6.0, 7.5, 10.0])
+        volumes = np.array([1.0, 3.0, 5.0])
+        min_dose = 6.0
+
+        matrix = penalty_calc_matrix(delivered_doses=doses, volume_space=volumes, min_dose=min_dose)
+        for vi, vol in enumerate(volumes):
+            for di, dose in enumerate(doses):
+                single = penalty_calc_single(physical_dose=dose, min_dose=min_dose, actual_volume=vol)
+                assert np.isclose(matrix[vi, di], single, rtol=1e-10), (
+                    f"Mismatch at vol={vol}, dose={dose}: matrix={matrix[vi, di]}, single={single}"
+                )
 
 
 class TestStdCalc:
@@ -185,53 +216,83 @@ class TestStdCalc:
         """Test standard deviation with highly varying volumes."""
         varying_volumes = np.array([0.5, 2.0, 5.0, 1.0, 3.5])
         result = std_calc(varying_volumes, DEFAULT_ALPHA, DEFAULT_BETA)
-        
+
         assert result > 0, "Standard deviation should be positive"
         # Should be larger than for constant volumes
         constant_result = std_calc(np.array([2.5, 2.5, 2.5, 2.5, 2.5]), DEFAULT_ALPHA, DEFAULT_BETA)
         assert result > constant_result, "Varying data should have larger standard deviation"
 
+    def test_std_calc_result_below_cap(self):
+        """std_calc search grid caps at ~9.999 cc; clinical data should stay well below this cap."""
+        # The 58-patient cohort has max sigma ≈ 3.3 cc; the cap at 9.999 cc should never be hit.
+        typical_volumes = np.array([1.0, 5.0, 9.0, 0.5, 8.5])  # large variance
+        result = std_calc(typical_volumes, DEFAULT_ALPHA, DEFAULT_BETA)
+
+        assert result < 9.999, (
+            f"std_calc result {result} is at or near the 10 cc search-grid cap; "
+            "if this triggers, the cap may need extending"
+        )
+
 
 class TestProbdist:
     """Test the probdist function."""
-    
+
     def test_probdist_basic(self):
         """Test basic probability distribution calculation."""
         X = (3.0, 1.0)
         state_space = np.linspace(0, 6, 21)
-        
+
         result = probdist(X, state_space)
-        
+
         assert isinstance(result, np.ndarray), "Result should be numpy array"
         assert len(result) == len(state_space), "Result length should match state space"
-        
+
         # Should be a valid probability distribution
         assert np.all(result >= 0), "All probabilities should be non-negative"
         assert np.isclose(np.sum(result), 1.0, rtol=1e-2), "Probabilities should sum to approximately 1"
-    
+
     def test_probdist_properties(self):
         """Test mathematical properties of probability distribution."""
         X = (5.0, 1.5)
         state_space = np.linspace(0, 10, 51)
-        
+
         result = probdist(X, state_space)
-        
+
         # Maximum probability should be near the mean
         max_idx = np.argmax(result)
         max_state = state_space[max_idx]
         assert abs(max_state - 5.0) < 1.0, f"Maximum probability at {max_state} should be near mean 5.0"
-        
+
         # Distribution should be unimodal (single peak)
         # Find the peak and check monotonicity on both sides
         left_side = result[:max_idx]
         right_side = result[max_idx:]
-        
+
         # Allow some tolerance for numerical precision
         left_increasing = np.all(np.diff(left_side) >= -1e-10)
         right_decreasing = np.all(np.diff(right_side) <= 1e-10)
-        
+
         assert left_increasing or len(left_side) <= 1, "Left side should be non-decreasing"
         assert right_decreasing or len(right_side) <= 1, "Right side should be non-increasing"
+
+    def test_probdist_sum_less_than_1_when_belief_outside_state_space(self):
+        """probdist does not fold tails, so sum < 1 when belief tails extend beyond state_space.
+
+        This documents the intentional asymmetry with _P_BELIEF (which folds tails so each row
+        sums to exactly 1).  probdist is the no-tail-fold version; callers must be aware of it.
+        """
+        # Belief is centred at 50 cc with sigma=2 cc, but state_space only goes to 10 cc.
+        # The distribution almost entirely falls outside state_space.
+        X = (50.0, 2.0)
+        state_space = np.linspace(0, 10, 101)
+
+        result = probdist(X, state_space)
+
+        assert np.all(result >= 0), "All probabilities should be non-negative"
+        # Sum should be much less than 1 because the belief is far outside state_space
+        assert np.sum(result) < 0.01, (
+            f"probdist sum should be near 0 when belief is far outside state_space; got {np.sum(result):.6f}"
+        )
 
 
 class TestPlottingFunctions:
@@ -250,19 +311,38 @@ class TestPlottingFunctions:
             pytest.fail(f"actual_policy_plotter raised an exception: {e}")
     
     def test_analytic_plotting_no_error(self):
-        """Test that analytic_plotting doesn't raise errors."""
+        """Test that analytic_plotting works with the expected 3D (Stage 0) format."""
         fraction = 3
         number_of_fractions = 5
-        # Values should be a 3D array: (fractions, volume_space, dose_space)
+        # Values must be a 3D array: (remaining_fractions, volume_space, dose_space)
         values = np.random.rand(number_of_fractions, 10, 15)
         volume_space = np.linspace(0, 5, 10)
         dose_space = np.linspace(6, 10, 15)
-        
-        # Should not raise an exception
+
+        # Should not raise an exception for 3D input
         try:
             analytic_plotting(fraction, number_of_fractions, values, volume_space, dose_space)
         except Exception as e:
             pytest.fail(f"analytic_plotting raised an exception: {e}")
+
+    def test_analytic_plotting_raises_for_stage_a_5d_output(self):
+        """analytic_plotting raises ValueError when passed Stage A 5D values array.
+
+        Stage A (belief-state DP) returns values with shape
+        (remaining_fractions, N_dose, N_overlap, N_mu, N_sigma) — 5D.  The plotting
+        function only understands the older 3D format and must reject 5D input loudly
+        instead of silently producing garbage plots.
+        """
+        import pytest as _pytest
+        fraction = 1
+        number_of_fractions = 5
+        # Simulate a Stage A values array: (remaining_fractions-1, N_dose, N_overlap, N_mu, N_sigma)
+        values_5d = np.random.rand(4, 10, 20, 5, 3)
+        volume_space = np.linspace(0, 5, 20)
+        dose_space = np.linspace(6, 10, 10)
+
+        with _pytest.raises(ValueError, match="3D"):
+            analytic_plotting(fraction, number_of_fractions, values_5d, volume_space, dose_space)
 
 
 # Integration tests using evaluation-style data

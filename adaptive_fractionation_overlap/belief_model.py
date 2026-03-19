@@ -8,6 +8,17 @@ grids so that the DP value tables can be indexed directly.
 
 Branch probabilities _P_BELIEF[mi, si, j] = P(overlap in bin j | belief (mu_grid[mi],
 sigma_grid[si])) are precomputed once at module load and reused across all calls.
+
+Tail-folding note
+-----------------
+_P_BELIEF uses tail-folding: the probability mass that falls below _VOLUME_SPACE[0] or
+above _VOLUME_SPACE[-1] is folded into the boundary bins, so each row sums to exactly
+1.0.  current_belief_probdist (used for the actual observed patient belief at each
+fraction) does NOT fold tails, so its output can sum to slightly less than 1.0 if the
+patient's belief tails extend outside _VOLUME_SPACE.  In practice this is negligible
+because _VOLUME_SPACE covers mu_grid_max + 4 * sigma_grid_max ≈ 44 cc, far beyond any
+observed patient.  For NIG extensibility (Stage B): replace current_belief_probdist
+with a Student-t CDF-difference; _P_BELIEF would then require a corresponding update.
 """
 
 import numpy as np
@@ -161,3 +172,33 @@ def _bellman_expectation_full_grid(values_prev, observation_count):
         future_value_prob_full += vals_flat[:, j, :][:, next_b[:, :, j]] * _P_BELIEF[None, :, :, j]
 
     return future_value_prob_full
+
+
+# ---------------------------------------------------------------------------
+# Current-belief branch probabilities (evaluated on-the-fly, not precomputed)
+# ---------------------------------------------------------------------------
+
+def current_belief_probdist(mu: float, sigma: float) -> np.ndarray:
+    """Return P(overlap in bin j | current patient belief (mu, sigma)) over _VOLUME_SPACE.
+
+    Evaluates Gaussian CDF differences over the fixed _VOLUME_SPACE grid, without
+    tail-folding.  The probabilities may therefore sum to slightly less than 1.0 when
+    the belief tails extend beyond _VOLUME_SPACE; in practice this is negligible
+    because _VOLUME_SPACE covers _MU_GRID[-1] + 4 * _SIGMA_GRID[-1] ≈ 44 cc.
+
+    Unlike _P_BELIEF (precomputed for all grid points, with tail-folding), this
+    function evaluates on-the-fly for the patient's actual current belief — which
+    may lie off-grid between DP solver calls.
+
+    For NIG extensibility (Stage B): replace this function with a Student-t
+    CDF-difference over _VOLUME_SPACE, leaving _bellman_expectation unchanged.
+
+    Args:
+        mu (float): current belief mean (cc).
+        sigma (float): current belief standard deviation (cc).
+
+    Returns:
+        np.ndarray: probability of each overlap bin j; shape (N_overlap,).
+    """
+    from .helper_functions import probdist
+    return probdist((mu, sigma), _VOLUME_SPACE)
