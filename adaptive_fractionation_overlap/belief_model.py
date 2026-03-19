@@ -105,7 +105,7 @@ def _bellman_expectation(values_prev, volume_space, p_branch, mu, sigma, observa
     """
     next_mi, next_si = _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count) # If overlap was j, where would the belief (mu, sigma) land on the grid?
     branch_vals = values_prev[:, np.arange(len(volume_space)), next_mi, next_si]  # Value function of the next belief state
-    return (branch_vals * p_branch[None, :]).sum(axis=1) # Probability-weighed sum of next states' value functions
+    return (branch_vals * p_branch[None, :]).sum(axis=1) # Probability-weighted sum of next states' value functions
 
 
 def _bellman_expectation_full_grid(values_prev, observation_count):
