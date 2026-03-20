@@ -17,6 +17,8 @@ from adaptive_fractionation_overlap.constants import (
 )
 from adaptive_fractionation_overlap.helper_functions import std_calc, build_dose_decision_lines
 
+_INFEASIBLE_SENTINEL = -100000000000
+
 st.set_page_config(layout="wide")
 st.title('Overlap Adaptive Fractionation Interface')
 st.markdown('## info \n This web app is supposed to be used as user interface to compute the optimal dose to be delivered in PTV-OAR-overlap adaptive fractionation if you have any questions please contact [yoel.perezhaas@usz.ch](mailto:yoel.perezhaas@usz.ch)')
@@ -85,12 +87,12 @@ def build_input_summary(
     return ("\n".join(lines)).encode("utf-8")
 
 @st.cache_data
-def build_precompute_zip(csv_bytes, input_summary_bytes):
+def build_precompute_zip(csv_bytes, input_summary_bytes, fraction):
     """Bundle precompute outputs into a single zip file."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("precomputed_plans.csv", csv_bytes)
-        zf.writestr(f"Fraction_{actual_fraction}_summary.txt", input_summary_bytes)
+        zf.writestr(f"Fraction_{fraction}_summary.txt", input_summary_bytes)
     return buffer.getvalue()
 
 
@@ -113,13 +115,13 @@ if st.button('compute optimal dose', help = 'takes the given inputs from above t
     overlaps_str = overlaps_str.split()
     overlaps = [float(i) for i in overlaps_str]
     if function == 'actual fraction calculation':
-        [policies, policies_overlap, volume_space, physical_dose, penalty_added, values, dose_space, probabilities, final_penalty] = af.adaptive_fractionation_core(fraction = int(actual_fraction),volumes = np.array(overlaps), accumulated_dose = float(accumulated_dose), number_of_fractions = int(fractions), min_dose = float(minimum_dose), max_dose = float(maximum_dose), mean_dose = float(mean_dose), dose_steps = float(dose_steps))
+        [policies, policies_overlap, volume_space, physical_dose, penalty_added, values, dose_space, probabilities, optimal_state_value] = af.adaptive_fractionation_core(fraction = int(actual_fraction),volumes = np.array(overlaps), accumulated_dose = float(accumulated_dose), number_of_fractions = int(fractions), min_dose = float(minimum_dose), max_dose = float(maximum_dose), mean_dose = float(mean_dose), dose_steps = float(dose_steps), alpha = DEFAULT_ALPHA, beta = DEFAULT_BETA)
         left2, right2 = st.columns(2)
         with left2:
-            actual_value = 'Goal can not be reached' if final_penalty <= -100000000000 else str(np.round(final_penalty,1)) + 'ccGy'
+            actual_value = 'Goal can not be reached' if optimal_state_value <= _INFEASIBLE_SENTINEL else str(np.round(optimal_state_value,1)) + 'ccGy'
             st.metric(label="optimal dose for actual fraction", value= str(physical_dose) + 'Gy', delta = (physical_dose - float(mean_dose)))
             st.metric(label="expected final penalty from this fraction", value = actual_value)
-            if final_penalty <= -100000000000:
+            if optimal_state_value <= _INFEASIBLE_SENTINEL:
                 st.write('the minimal dose is delivered if we overdose, the maximal dose is delivered if we underdose')
                 st.markdown('by taking this approach and delivering the minimum/maximum dose in each fraction we miss the goal by:')
                 st.metric(label= '', value = str(float(accumulated_dose) + float(physical_dose)*(int(fractions) - int(actual_fraction) + 1) - float(mean_dose) * int(fractions)))
@@ -151,7 +153,7 @@ if st.button('compute optimal dose', help = 'takes the given inputs from above t
             intercept=INTERCEPT,
             volume_x_dose=volume_x_dose
         )
-        zip_bytes = build_precompute_zip(csv, input_summary)
+        zip_bytes = build_precompute_zip(csv, input_summary, int(actual_fraction))
         left2, right2 = st.columns(2)  
         with left2:
             st.dataframe(data = volume_x_dose,height = 600, hide_index = True)
@@ -170,10 +172,10 @@ if st.button('compute optimal dose', help = 'takes the given inputs from above t
         cols = st.columns(int(fractions))
         for i, col in enumerate(cols):
             with col:
-                st.metric(label=f"**overlap**", value=f"{overlaps[-(int(fractions) - i)]}cc")
+                st.metric(label="**overlap**", value=f"{overlaps[-(int(fractions) - i)]}cc")
                 st.metric(label=f"**fraction {i + 1}**", value=f"{physical_doses[i]}Gy", delta=np.round(physical_doses[i] - float(mean_dose),1))
         st.header('Plan summary')
         st.markdown('The adaptive plan achieved a total penalty of:')
-        st.metric(label = "penalty", value = str(total_penalty) + 'ccGy', delta = np.round(total_penalty + af.penalty_calc_single(float(mean_dose),6,np.array(overlaps[-int(fractions):]), intercept = INTERCEPT, slope = SLOPE).sum(),2))
+        st.metric(label = "penalty", value = str(total_penalty) + 'ccGy', delta = np.round(total_penalty + af.penalty_calc_single(float(mean_dose),float(minimum_dose),np.array(overlaps[-int(fractions):]), intercept = INTERCEPT, slope = SLOPE).sum(),2))
         st.markdown('The arrow shows the comparison to standard fractionation, i.e. (number of fractions x mean dose). A green arrow shows an improvement.')
 
