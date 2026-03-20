@@ -56,7 +56,7 @@ _SIGMA_MIN = float(_SIGMA_GRID[0])
 
 # Fixed overlap state space: 0 to 44 cc in 0.1 cc steps, matching TPS output resolution.
 # Hardcoded to 44 cc (independent of _SIGMA_GRID) so that bin width stays exactly 0.1 cc.
-# 44 cc covers mu_grid_max (30 cc) + 4 × sigma_grid_max (4.5 cc) = 48 cc with margin to spare;
+# 44 cc covers mu_grid_max (30 cc) + 3 × sigma_grid_max (4.5 cc) = 43.5 cc with margin to spare;
 # the tail probability beyond 44 cc is negligible for any belief on the grid.
 _VOLUME_SPACE = np.linspace(0.0, 44.0, 441)  # 0.1 cc steps, fixed upper bound
 
