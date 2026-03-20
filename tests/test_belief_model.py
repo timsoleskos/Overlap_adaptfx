@@ -23,8 +23,8 @@ class TestGrids:
     """Verify the static grid constants."""
 
     def test_mu_grid_shape_and_order(self):
-        """_MU_GRID should be sorted, positive, and have the documented 280 points."""
-        assert len(_MU_GRID) == 280, f"Expected 280 mu grid points, got {len(_MU_GRID)}"
+        """_MU_GRID should be sorted, positive, and have the documented 150 points."""
+        assert len(_MU_GRID) == 150, f"Expected 150 mu grid points, got {len(_MU_GRID)}"
         assert np.all(np.diff(_MU_GRID) > 0), "_MU_GRID must be strictly increasing"
         assert _MU_GRID[0] >= 0.0, "_MU_GRID must start at or above 0 cc"
 

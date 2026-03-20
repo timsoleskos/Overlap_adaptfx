@@ -43,6 +43,5 @@ python_functions = ["test_*"]
 addopts = ["-v", "--tb=short"]
 markers = [
     "unit: Unit tests for individual functions",
-    "integration: Integration tests for multiple components", 
-    "slow: Tests that take longer to run"
+    "integration: Integration tests for multiple components",
 ]

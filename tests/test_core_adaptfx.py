@@ -303,7 +303,6 @@ class TestAdaptfxFull:
         assert np.allclose(accumulated_doses, expected_accumulated, atol=1e-10), \
             "Accumulated doses should follow algorithm pattern: [0, cumsum(doses[:-1])]"
     
-    @pytest.mark.slow
     def test_adaptfx_full_evaluation_style(self, evaluation_patient_data):
 
         for i, (patient_overlaps, prescription) in enumerate(
@@ -403,7 +402,6 @@ class TestAdaptfxFull:
 class TestPrecomputePlan:
     """Test the precompute_plan function."""
     
-    @pytest.mark.slow
     def test_precompute_plan_basic(self, sample_volumes):
         """Golden regression test for precompute_plan using the sample patient."""
         volumes = sample_volumes[:3]  # First 3 volumes
@@ -471,7 +469,6 @@ class TestPrecomputePlan:
         )
         np.testing.assert_allclose(transitions, expected_transitions, atol=1e-12)
     
-    @pytest.mark.slow
     def test_precompute_plan_different_fractions(self, sample_volumes):
         """Test precompute_plan for different fractions."""
         for fraction in [1, 2, 3, 4, 5]:
@@ -500,7 +497,6 @@ class TestPrecomputePlan:
 
 # Integration tests combining multiple functions
 @pytest.mark.integration
-@pytest.mark.slow
 class TestCoreAdaptfxIntegration:
     """Integration tests for core adaptive fractionation functions."""
     
@@ -629,9 +625,9 @@ class TestCoreAdaptfxGoldenRegression:
         # optimal_state_value = np.max(actual_value): best total expected OAR cost from this fraction onwards.
         # Last fraction is 0.0 since actual_value = np.zeros(1) when no future fractions remain.
         expected_final_penalties = np.array([
-            -23.246078172110224,
-            -15.341822539887957,
-            -14.683385931116208,
+            -23.251976372982192,
+            -15.356416794508675,
+            -14.677363350363091,
             -14.429293729122907,
             0.0,
         ])
@@ -732,7 +728,6 @@ class TestCoreAdaptfxEdgeCases:
         assert physical_dose == 10.0, "Dose should be maximum dose" 
 
 
-@pytest.mark.slow
 class TestCoreAdaptfxPerformance:
     """Performance tests for core functions."""
     

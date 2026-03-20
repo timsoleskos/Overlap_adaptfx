@@ -167,9 +167,6 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests as integration tests (slower, multiple components)"
     )
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow (performance or stress tests)"
-    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -179,17 +176,13 @@ def pytest_collection_modifyitems(config, items):
     This function runs after pytest collects all tests and can
     automatically add markers based on test names or locations.
     """
-    # Automatically mark slow tests
     for item in items:
-        if "slow" in item.name or "performance" in item.name:
-            item.add_marker(pytest.mark.slow)
-            
         # Mark integration tests
         if "integration" in item.name or "full" in item.name or "end_to_end" in item.name:
             item.add_marker(pytest.mark.integration)
-            
+
         # Mark unit tests (default for most tests)
-        elif not any(marker.name in ["integration", "slow"] for marker in item.iter_markers()):
+        elif not any(marker.name == "integration" for marker in item.iter_markers()):
             item.add_marker(pytest.mark.unit)
 
 
