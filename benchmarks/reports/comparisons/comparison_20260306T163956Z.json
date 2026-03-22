@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-03-06T16:39:56.881554+00:00",
+  "baseline_report": "C:\\sources\\Overlap_adaptfx\\benchmarks\\reports\\master_baseline_20260306T131316Z.json",
+  "candidate_report": "C:\\sources\\Overlap_adaptfx\\benchmarks\\reports\\stage_a_v4_smoke_20260306T163910Z.json",
+  "summary": {
+    "compared_case_count": 5,
+    "delta_benefit_stats": {
+      "count": 5,
+      "min": 0.0,
+      "max": 1.1644374999999911,
+      "mean": 0.23288749999999822,
+      "median": 0.0,
+      "p05": 0.0,
+      "p95": 0.9315499999999927
+    },
+    "improved_count": 1,
+    "improved_fraction": 0.2,
+    "severe_disadvantage_threshold": -1.0,
+    "severe_disadvantage_count": 0,
+    "severe_disadvantage_fraction": 0.0,
+    "runtime_sec": {
+      "baseline_total": 1.1979618999175727,
+      "candidate_total": 33.00200439989567,
+      "candidate_over_baseline": 27.548459097210365,
+      "baseline_case_runtime_stats": {
+        "count": 5,
+        "min": 0.018627099925652146,
+        "max": 0.022367200115695596,
+        "mean": 0.019714460009709,
+        "median": 0.019039300037547946,
+        "p05": 0.018664339929819106,
+        "p95": 0.02183884009718895
+      },
+      "candidate_case_runtime_stats": {
+        "count": 5,
+        "min": 6.336291000014171,
+        "max": 6.743145099841058,
+        "mean": 6.599895839951932,
+        "median": 6.636351099936292,
+        "p05": 6.392215819982812,
+        "p95": 6.728071459895
+      }
+    },
+    "gap_to_ideal": {
+      "old_gap_stats": {
+        "count": 5,
+        "min": 0.2687500000000007,
+        "max": 5.444250000000011,
+        "mean": 1.9838750000000034,
+        "median": 0.7640624999999979,
+        "p05": 0.2763875000000013,
+        "p95": 4.982475000000009
+      },
+      "new_gap_stats": {
+        "count": 5,
+        "min": 0.2687500000000007,
+        "max": 5.444250000000011,
+        "mean": 1.750987500000005,
+        "median": 0.7640624999999979,
+        "p05": 0.2763875000000013,
+        "p95": 4.74958750000001
+      },
+      "gap_closure_stats": {
+        "count": 5,
+        "min": 0.0,
+        "max": 0.3713869951760124,
+        "mean": 0.07427739903520249,
+        "median": 0.0,
+        "p05": 0.0,
+        "p95": 0.2971095961408099
+      }
+    }
+  },
+  "per_case": [
+    {
+      "case_id": "1",
+      "patient_number": 1,
+      "old_benefit": 1.360097499999993,
+      "new_benefit": 1.360097499999993,
+      "delta_benefit": 0.0,
+      "ideal_benefit": 2.124159999999991,
+      "old_gap_to_ideal": 0.7640624999999979,
+      "new_gap_to_ideal": 0.7640624999999979,
+      "gap_closure_normalized": 0.0,
+      "baseline_runtime_sec": 0.022367200115695596,
+      "candidate_runtime_sec": 6.336291000014171
+    },
+    {
+      "case_id": "2",
+      "patient_number": 2,
+      "old_benefit": 3.0437099999999866,
+      "new_benefit": 3.0437099999999866,
+      "delta_benefit": 0.0,
+      "ideal_benefit": 3.3124599999999873,
+      "old_gap_to_ideal": 0.2687500000000007,
+      "new_gap_to_ideal": 0.2687500000000007,
+      "gap_closure_normalized": 0.0,
+      "baseline_runtime_sec": 0.019725400023162365,
+      "candidate_runtime_sec": 6.667776900110766
+    },
+    {
+      "case_id": "3",
+      "patient_number": 3,
+      "old_benefit": 15.68180249999996,
+      "new_benefit": 15.68180249999996,
+      "delta_benefit": 0.0,
+      "ideal_benefit": 15.988739999999964,
+      "old_gap_to_ideal": 0.30693750000000364,
+      "new_gap_to_ideal": 0.30693750000000364,
+      "gap_closure_normalized": 0.0,
+      "baseline_runtime_sec": 0.019039300037547946,
+      "candidate_runtime_sec": 6.743145099841058
+    },
+    {
+      "case_id": "4",
+      "patient_number": 4,
+      "old_benefit": -0.9532200000000444,
+      "new_benefit": 0.21121749999994677,
+      "delta_benefit": 1.1644374999999911,
+      "ideal_benefit": 2.182154999999959,
+      "old_gap_to_ideal": 3.1353750000000034,
+      "new_gap_to_ideal": 1.9709375000000122,
+      "gap_closure_normalized": 0.3713869951760124,
+      "baseline_runtime_sec": 0.018627099925652146,
+      "candidate_runtime_sec": 6.636351099936292
+    },
+    {
+      "case_id": "5",
+      "patient_number": 5,
+      "old_benefit": -1.4604575000000466,
+      "new_benefit": -1.4604575000000466,
+      "delta_benefit": 0.0,
+      "ideal_benefit": 3.9837924999999643,
+      "old_gap_to_ideal": 5.444250000000011,
+      "new_gap_to_ideal": 5.444250000000011,
+      "gap_closure_normalized": 0.0,
+      "baseline_runtime_sec": 0.01881329994648695,
+      "candidate_runtime_sec": 6.615915099857375
+    }
+  ]
+}

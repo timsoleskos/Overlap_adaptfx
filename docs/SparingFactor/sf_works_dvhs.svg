@@ -1,0 +1,190 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <rect width="1400" height="900" fill="#fcfcf8"/>
+
+  <text x="40" y="50" font-family="Helvetica, Arial, sans-serif" font-size="30" font-weight="700" fill="#222">
+    Combined DVH plots where the sparing factor does work
+  </text>
+  <text x="40" y="84" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    No overlap in either case. The PTV stays fully covered, while OAR spill reflects the separation distance.
+  </text>
+  <text x="40" y="112" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    Both axes show absolute cumulative volume: volume receiving at least the shown dose.
+  </text>
+
+  <rect x="40" y="145" width="640" height="590" rx="18" fill="#f7f4ea" stroke="#d8d1bc" stroke-width="2"/>
+  <rect x="720" y="145" width="640" height="590" rx="18" fill="#f7f4ea" stroke="#d8d1bc" stroke-width="2"/>
+
+  <text x="70" y="190" font-family="Helvetica, Arial, sans-serif" font-size="26" font-weight="700" fill="#222">
+    Case C: close, but no overlap
+  </text>
+  <text x="750" y="190" font-family="Helvetica, Arial, sans-serif" font-size="26" font-weight="700" fill="#222">
+    Case D: farther away
+  </text>
+
+  <text x="70" y="220" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    The OAR is nearby, so some dose spills into it.
+  </text>
+  <text x="750" y="220" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    Greater separation reduces the OAR high-dose tail.
+  </text>
+
+  <!-- Legend -->
+  <line x1="70" y1="255" x2="120" y2="255" stroke="#c9574a" stroke-width="6"/>
+  <text x="132" y="261" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#333">
+    PTV DVH
+  </text>
+  <line x1="245" y1="255" x2="295" y2="255" stroke="#4c8d45" stroke-width="6"/>
+  <text x="307" y="261" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#333">
+    OAR DVH
+  </text>
+
+  <line x1="750" y1="255" x2="800" y2="255" stroke="#c9574a" stroke-width="6"/>
+  <text x="812" y="261" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#333">
+    PTV DVH
+  </text>
+  <line x1="925" y1="255" x2="975" y2="255" stroke="#4c8d45" stroke-width="6"/>
+  <text x="987" y="261" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#333">
+    OAR DVH
+  </text>
+
+  <!-- Case C axes -->
+  <line x1="110" y1="650" x2="110" y2="300" stroke="#444" stroke-width="3"/>
+  <line x1="110" y1="650" x2="610" y2="650" stroke="#444" stroke-width="3"/>
+  <line x1="110" y1="300" x2="610" y2="300" stroke="#e2ddcf" stroke-width="1.5"/>
+  <line x1="110" y1="317.5" x2="610" y2="317.5" stroke="#b6a16a" stroke-width="2" stroke-dasharray="8,6"/>
+  <line x1="110" y1="641.25" x2="610" y2="641.25" stroke="#b6a16a" stroke-width="2" stroke-dasharray="8,6"/>
+  <line x1="610" y1="300" x2="610" y2="650" stroke="#b6a16a" stroke-width="2" stroke-dasharray="8,6"/>
+  <line x1="310" y1="300" x2="310" y2="650" stroke="#b6a16a" stroke-width="2" stroke-dasharray="8,6"/>
+
+  <text x="92" y="306" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    40
+  </text>
+  <text x="92" y="323" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    38
+  </text>
+  <text x="99" y="646" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    1
+  </text>
+  <text x="103" y="656" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    0
+  </text>
+  <text x="137" y="680" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    0
+  </text>
+  <text x="300" y="680" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    4
+  </text>
+  <text x="400" y="680" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    6
+  </text>
+  <text x="590" y="680" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    10
+  </text>
+  <text x="255" y="713" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#444">
+    dose [Gy]
+  </text>
+  <text x="36" y="485" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#444" transform="rotate(-90 36 485)">
+    volume receiving at least dose [cc]
+  </text>
+
+  <polyline points="110,300 610,300 610,650"
+            fill="none" stroke="#c9574a" stroke-width="5"/>
+  <polyline points="110,623.75 310,623.75 310,650 610,650"
+            fill="none" stroke="#4c8d45" stroke-width="5"/>
+
+  <circle cx="610" cy="317.5" r="6" fill="#b6a16a"/>
+  <circle cx="310" cy="641.25" r="6" fill="#b6a16a"/>
+  <text x="420" y="320" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#7c6d4d">
+    D95(PTV) = 10 Gy
+  </text>
+  <text x="324" y="628" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#7c6d4d">
+    D1cc(OAR) = 4 Gy
+  </text>
+  <text x="150" y="286" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#555">
+    PTV: full coverage, all 40 cc reach 10 Gy
+  </text>
+  <text x="150" y="607" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#555">
+    OAR: 3 cc receive 4 Gy, so the 1 cc point is at 4 Gy
+  </text>
+
+  <rect x="160" y="748" width="395" height="62" rx="12" fill="#fff6e8" stroke="#d5b67a" stroke-width="2"/>
+  <text x="184" y="775" font-family="Helvetica, Arial, sans-serif" font-size="21" font-weight="700" fill="#222">
+    SF = D1cc / D95 = 4 / 10 = 0.40
+  </text>
+  <text x="184" y="799" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#444">
+    closer geometry leads to larger OAR spill
+  </text>
+
+  <!-- Case D axes -->
+  <line x1="790" y1="650" x2="790" y2="300" stroke="#444" stroke-width="3"/>
+  <line x1="790" y1="650" x2="1290" y2="650" stroke="#444" stroke-width="3"/>
+  <line x1="790" y1="300" x2="1290" y2="300" stroke="#e2ddcf" stroke-width="1.5"/>
+  <line x1="790" y1="317.5" x2="1290" y2="317.5" stroke="#b6a16a" stroke-width="2" stroke-dasharray="8,6"/>
+  <line x1="790" y1="641.25" x2="1290" y2="641.25" stroke="#b6a16a" stroke-width="2" stroke-dasharray="8,6"/>
+  <line x1="1290" y1="300" x2="1290" y2="650" stroke="#b6a16a" stroke-width="2" stroke-dasharray="8,6"/>
+  <line x1="840" y1="300" x2="840" y2="650" stroke="#b6a16a" stroke-width="2" stroke-dasharray="8,6"/>
+
+  <text x="772" y="306" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    40
+  </text>
+  <text x="772" y="323" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    38
+  </text>
+  <text x="779" y="646" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    1
+  </text>
+  <text x="783" y="656" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    0
+  </text>
+  <text x="817" y="680" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    0
+  </text>
+  <text x="835" y="680" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    1
+  </text>
+  <text x="1080" y="680" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    6
+  </text>
+  <text x="1270" y="680" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#444">
+    10
+  </text>
+  <text x="935" y="713" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#444">
+    dose [Gy]
+  </text>
+  <text x="716" y="485" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#444" transform="rotate(-90 716 485)">
+    volume receiving at least dose [cc]
+  </text>
+
+  <polyline points="790,300 1290,300 1290,650"
+            fill="none" stroke="#c9574a" stroke-width="5"/>
+  <polyline points="790,623.75 840,623.75 840,650 1290,650"
+            fill="none" stroke="#4c8d45" stroke-width="5"/>
+
+  <circle cx="1290" cy="317.5" r="6" fill="#b6a16a"/>
+  <circle cx="840" cy="641.25" r="6" fill="#b6a16a"/>
+  <text x="1060" y="320" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#7c6d4d">
+    D95(PTV) = 10 Gy
+  </text>
+  <text x="854" y="628" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#7c6d4d">
+    D1cc(OAR) = 1 Gy
+  </text>
+  <text x="830" y="286" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#555">
+    PTV: full coverage, all 40 cc reach 10 Gy
+  </text>
+  <text x="830" y="607" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#555">
+    OAR: only a small low-dose tail remains
+  </text>
+
+  <rect x="840" y="748" width="410" height="62" rx="12" fill="#fff6e8" stroke="#d5b67a" stroke-width="2"/>
+  <text x="864" y="775" font-family="Helvetica, Arial, sans-serif" font-size="21" font-weight="700" fill="#222">
+    SF = D1cc / D95 = 1 / 10 = 0.10
+  </text>
+  <text x="864" y="799" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#444">
+    farther geometry leads to smaller OAR spill
+  </text>
+
+  <rect x="40" y="830" width="1320" height="50" rx="12" fill="#f0efe8" stroke="#d2d0c4" stroke-width="1"/>
+  <text x="60" y="862" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    Takeaway: without overlap, D95 stays anchored by the prescription while D1cc reflects proximity, so SF distinguishes favorable from unfavorable geometry.
+  </text>
+</svg>

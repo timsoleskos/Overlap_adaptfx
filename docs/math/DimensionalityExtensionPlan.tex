@@ -1,0 +1,485 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{array}
+\usepackage{url}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\urlstyle{tt}
+\DeclareRobustCommand{\code}[1]{\ifmmode\text{\texttt{\detokenize{#1}}}\else\texttt{\detokenize{#1}}\fi}
+\newcommand{\Dpres}{D_{\mathrm{pres}}}
+
+\title{Dimensionality Extension Plan\\Belief-State (Bayesian) Adaptive Fractionation}
+\author{Internal repository design note}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+This note defines the belief-state extension to the adaptive fractionation solver across two stages of increasing Bayesian fidelity. Both stages retain a 5-coordinate finite-horizon state.
+
+The baseline (current master branch) state is:
+\begin{equation}
+\text{state}_{\mathrm{current}} = (t,\, o_t,\, D_t).
+\end{equation}
+
+\textbf{Stage A} (implemented) extends the state to include a running Gaussian belief:
+\begin{equation}
+\text{state}_{\mathrm{A}} = (t,\, o_t,\, D_t,\, \mu_t,\, \sigma_t),
+\end{equation}
+where $(\mu_t, \sigma_t)$ tracks a running mean and standard deviation of the patient's PTV--OAR overlap distribution, updated after each observed fraction via Welford's online algorithm. Branch transition probabilities are computed from a Normal predictive distribution $\mathcal{N}(\mu_t, \sigma_t^2)$.
+
+\textbf{Stage B} (NIG extension) retains the same 5-coordinate state but replaces the Normal predictive with the theoretically correct posterior predictive derived from the Normal-Inverse-Gamma (NIG) conjugate model. The key observation enabling this is that the full NIG posterior is a deterministic function of the sufficient statistics $(n, \bar s, M_2)$, all of which are already encoded in the Stage~A state $(\mu_t, \sigma_t, t)$ together with the fixed population prior. No additional state dimensions are required: Stage~B is implemented by changing how branch-probability tables are computed, not by expanding the state.
+
+\section{Scope and Non-Goals}
+
+\subsection{In Scope}
+\begin{itemize}
+\item Replace the Normal branch-probability tables with NIG posterior-predictive (Student-$t$) tables, indexed by fraction number.
+\item Use the prior-corrected posterior mean $\mu_n = (\kappa_0\mu_0 + n\bar s)/(\kappa_0+n)$ as the predictive centre rather than the raw sample mean.
+\item Update planning-time initialisation to use the full NIG posterior predictive rather than a Normal approximation.
+\item Estimate and introduce the two additional NIG prior hyperparameters $\mu_0$ (prior mean) and $\kappa_0$ (prior precision weight) from population-level estimation on the patient cohort, stored alongside the existing \code{DEFAULT_ALPHA} and \code{DEFAULT_BETA} constants.
+\item Preserve Welford's belief-update rule unchanged: it is equivalent to updating the NIG sufficient statistics.
+\item Update the planning-scan termination criterion in \code{precompute_plan} to use a fixed clinically safe overlap bound rather than a Gaussian percentile heuristic.
+\end{itemize}
+
+\subsection{What Remains Unchanged}
+\begin{itemize}
+\item The state coordinates $(t, o_t, D_t, \mu_t, \sigma_t)$ and their discretisation grids.
+\item The belief-update operator: Welford's online algorithm.
+\item Per-fraction action bounds $d_t \in [d_{\min}, d_{\max}]$ with the same action discretisation by \code{dose_steps}.
+\item Feasibility screening: infeasible states are assigned a hard sentinel value using the same convention as Stage~A.
+\item Terminal prescription logic: only $D_F = \Dpres$ is feasible at treatment end; terminal underdose and overdose remain hard-infeasible.
+\end{itemize}
+
+\subsection{Out of Scope}
+\begin{itemize}
+\item Changes to the clinical objective form beyond existing penalty logic.
+\item UI redesign in \code{app.py} beyond minimal parameter exposure.
+\end{itemize}
+
+\section{Required Mathematical Changes}
+
+\subsection{Stage A (Implemented): Bellman Recursion}
+
+The Stage~A recursion is:
+\begin{equation}
+V_t^{\mathrm{A}}(o,D,\mu,\sigma) =
+\max_d \Bigl[
+-\hat c_t(o,d)
++ \mathbb{E}_{o' \sim \mathcal N(\mu,\sigma^2)}
+V_{t+1}^{\mathrm{A}}\!\left(o', D+d,\; \mathcal U_{\mathrm{W}}(\mu,\sigma,o',t)\right)
+\Bigr].
+\end{equation}
+
+The belief update $\mathcal U_{\mathrm{W}}$ is Welford's running-moment increment. Let $n_t = t$ be the number of observations accumulated at fraction $t$; then:
+\begin{align}
+\mu' &= \frac{n_t\,\mu + o'}{n_t + 1}, \\[4pt]
+(\sigma')^2 &= \frac{n_t\,\sigma^2 + (o'-\mu)(o'-\mu')}{n_t + 1}.
+\end{align}
+This is the population-variance (ddof$=0$) form of Welford's increment, consistent with the codebase convention and with the denominator convention of the 2025 paper.
+
+\noindent\textit{Initialisation at planning time.} At decision time for fraction $f$ (with $f$ real observations $o_1,\dots,o_f$): set $\mu_{\mathrm{start}} = \bar o_f$ (population mean of observations) and $\sigma_{\mathrm{start}}$ from the MAP estimator (equations~11--13 of the clinical trial paper) applied to all $f$ observations, using prior parameters $(\alpha_0, \beta_0)$. This gives a prior-regularised $\sigma$ that is nonzero even at $f=1$.
+
+\noindent\textit{Branch representative.} For each overlap bin $j$ with edges $(l_j, u_j]$, use the grid centre \code{volume_space[j]} as the concrete scalar fed into $\mathcal{U}_{\mathrm{W}}$.
+
+\subsection{Stage A: Grid Specification}
+
+The $\mu$ grid uses five non-uniform segments over $[0, 30]$\,cc, with finest resolution in the typical-patient range and progressively coarser resolution toward extreme values:
+\begin{center}
+\small
+\begin{tabular}{llll}
+\hline
+\textbf{Segment} & \textbf{Range (cc)} & \textbf{Points} & \textbf{Step (cc)} \\
+\hline
+1 & $[0.00,\ 1.00]$  & 38 & $\approx 0.027$ \\
+2 & $[1.05,\ 4.00]$  & 39 & $\approx 0.078$ \\
+3 & $[4.10,\ 10.00]$ & 42 & $\approx 0.144$ \\
+4 & $[10.20,\ 16.00]$ & 15 & $\approx 0.414$ \\
+5 & $[16.50,\ 30.00]$ & 16 & $\approx 0.900$ \\
+\hline
+\multicolumn{2}{l}{\textbf{Total}} & \textbf{150} & \\
+\hline
+\end{tabular}
+\normalsize
+\end{center}
+
+The $\sigma$ grid uses 11 non-uniform points over $[0.05, 4.5]$\,cc, with fine resolution in the range where most patients fall and coarser resolution in the tail:
+\begin{center}
+\small
+\begin{tabular}{llll}
+\hline
+\textbf{Segment} & \textbf{Range (cc)} & \textbf{Points} & \textbf{Step (cc)} \\
+\hline
+1 & $[0.05,\ 0.70]$ & 5 & $\approx 0.163$ \\
+2 & $[0.80,\ 1.80]$ & 3 & $\approx 0.500$ \\
+3 & $[2.00,\ 4.50]$ & 3 & $\approx 1.250$ \\
+\hline
+\multicolumn{2}{l}{\textbf{Total}} & \textbf{11} & \\
+\hline
+\end{tabular}
+\normalsize
+\end{center}
+This gives $150 \times 11 = 1{,}650$ belief states. The upper limit of 4.5\,cc is set to avoid clipping the most variable patient in the 58-patient cohort (patient~3, MAP $\hat\sigma = 4.05$\,cc). The fixed overlap state space \code{_VOLUME_SPACE} covers $[0, 44]$\,cc at 441 uniformly spaced points (step 0.1\,cc, matching TPS volume discretisation). The 44\,cc bound is hardcoded and independent of $\sigma_{\max}$, so the bin width stays exactly 0.1\,cc regardless of future $\sigma$ grid changes; 44\,cc comfortably covers $\mu_{\max} + 3\sigma_{\max} = 30 + 3\times 4.5 = 43.5$\,cc and the tail probability beyond 44\,cc is negligible for any belief on the grid. Branch probabilities fold left- and right-tail mass into the boundary bins so that probabilities sum to~1 for every belief-grid point. This tail-folding argument for Stage~A relies on the Normal predictive being negligibly thin beyond 44\,cc. For Stage~B, before committing the 44\,cc upper bound, sweep all $(t, \mu_{\mathrm{grid}}, \sigma_{\mathrm{grid}})$ triples under the fitted NIG hyperparameters and record the Student-$t$ predictive tail mass above 44\,cc. If the maximum folded mass is non-negligible, enlarge \code{_VOLUME_SPACE} (e.g.\ to 50 or 60\,cc) and re-run the benchmark to measure policy sensitivity; alternatively, document the approximation error explicitly if the 44\,cc cap is operationally required.
+
+\noindent\textit{Numerical invariant.} \code{_VOLUME_SPACE} is fixed and shared across all beliefs and all fractions. Using patient-specific or belief-specific overlap ranges is explicitly prohibited: when a belief's $\mu$ is far from the patient's current range, a narrow range assigns nearly all probability mass to a single edge bin, making the DP plan as if all future overlaps equal that edge regardless of the true belief. A fixed wide range avoids this.
+
+\subsection{Stage B: NIG Posterior from Sufficient Statistics}
+
+The NIG model places a Normal-Inverse-Gamma prior on the unknown overlap-distribution parameters $(\mu, \sigma^2)$:
+\[
+\mu,\,\sigma^2 \;\sim\; \mathrm{NIG}(\mu_0,\,\kappa_0,\,\alpha_0,\,\beta_0).
+\]
+Given $n$ i.i.d.\ observations with sample mean $\bar s$ and sum of squared deviations $M_2 = \sum_{i=1}^n(o_i - \bar s)^2$, the posterior is $\mathrm{NIG}(\mu_n, \kappa_n, \alpha_n, \beta_n)$ with the closed-form updates:
+\begin{align}
+\kappa_n &= \kappa_0 + n, \label{eq:kappa-update} \\[3pt]
+\mu_n    &= \frac{\kappa_0\,\mu_0 + n\,\bar s}{\kappa_n}, \label{eq:mu-update} \\[3pt]
+\alpha_n &= \alpha_0 + \tfrac{n}{2}, \label{eq:alpha-update} \\[3pt]
+\beta_n  &= \beta_0 + \tfrac{M_2}{2} + \frac{\kappa_0\,n\,(\bar s - \mu_0)^2}{2\,\kappa_n}. \label{eq:beta-update}
+\end{align}
+
+\noindent\textit{Key reduction.} The Stage~A state encodes all four sufficient statistics:
+\begin{align*}
+n     &= t \quad\text{(absolute 1-based fraction index, tracked as \code{observation_count = int(fraction_number)})}, \\
+\bar s &= \mu_t \quad\text{(Welford running mean, a state coordinate)}, \\
+M_2   &= n\,\sigma_t^2 \quad\text{(recoverable from $\sigma_t$ and $t$)}.
+\end{align*}
+Therefore $(\kappa_n, \mu_n, \alpha_n, \beta_n)$ are computable deterministically at any DP node from $(\mu_t, \sigma_t, t)$ and the fixed prior constants $(\mu_0, \kappa_0, \alpha_0, \beta_0)$. No additional state coordinates are required.
+
+\noindent Two practical caveats. First, the grid quantisation of $\sigma_t$ introduces the same discretisation error as in Stage~A and does not degrade Stage~B relative to Stage~A. Second, the Welford update in \code{_hypothetical_belief_grid_indices} and \code{_bellman_expectation_full_grid} applies a floor $\sigma' \ge \sigma_{\min} = 0.05$\,cc before snapping to the grid; the effective $M_2$ entering the $\beta_n$ computation is therefore $n \times \max(\sigma_t^2,\, \sigma_{\min}^2)$, not $n \times \sigma_t^2$. This is a minor effect for typical patients but must be matched exactly in the $\beta_n$ computation to keep Stage~B consistent with Stage~A's Welford dynamics.
+
+\subsection{Stage B: Posterior Predictive Distribution}
+
+Given the posterior $\mathrm{NIG}(\mu_n, \kappa_n, \alpha_n, \beta_n)$, the posterior predictive distribution for the next observation is:
+\begin{equation}
+\label{eq:predictive-student-t}
+o_{t+1} \mid (\mu_t,\,\sigma_t,\,t) \;\sim\; \mathrm{Student\text{-}t}_{2\alpha_n}\!\bigl(\mu_n,\; s_n\bigr),
+\end{equation}
+where the predictive scale is
+\begin{equation}
+\label{eq:predictive-scale}
+s_n = \sqrt{\frac{\beta_n\,(\kappa_n+1)}{\alpha_n\,\kappa_n}},
+\end{equation}
+and all quantities on the right-hand side are computed from $(\mu_t, \sigma_t, t, \mu_0, \kappa_0, \alpha_0, \beta_0)$ via equations~\eqref{eq:kappa-update}--\eqref{eq:beta-update}.
+
+\noindent\textit{Why Student-$t$.} When both the mean and variance of the overlap distribution are uncertain and marginalised out, the predictive is Student-$t$ rather than Normal. This gives heavier tails, most pronounced at early fractions where $\alpha_n$ is small and the degrees of freedom $2\alpha_n = 2\alpha_0 + t$ are low (near-Cauchy at $t=1$). Here ``near-Cauchy'' means a very low-degree-of-freedom Student-$t$: not literally a Cauchy unless the degrees of freedom equal 1, but close in the practical sense that it is much less concentrated than a Normal and assigns substantially more probability to extreme overlaps far from its centre. As $t$ grows, $2\alpha_n \to \infty$ and the Student-$t$ converges to a Normal; Stage~B and Stage~A become equivalent in the large-$t$ limit.
+
+\noindent\textit{Finite-variance constraint.} Enforce $\alpha_0^{\mathrm{NIG}} \geq 1$ in the empirical Bayes optimisation, which guarantees degrees of freedom $2\alpha_n \geq 2+t$ at every fraction and therefore a finite-variance predictive throughout treatment. Note that $\alpha_0 = 1$ is the minimum acceptable value but remains the boundary case: at fraction~1 the predictive is Student-$t_3$, which has finite variance but still places roughly five times more probability mass beyond $3\times\text{scale}$ than a Normal. The fraction-1 predictive should be plotted and inspected for both representative and extreme patients regardless of where the optimum falls. If the unconstrained optimisation consistently prefers $\alpha_0 < 1$, this is a model-misspecification signal; report both the unconstrained and constrained optima so the discrepancy can be investigated before finalising the model.
+
+\noindent\textit{Prior-corrected centre.} The predictive centre $\mu_n$ is a precision-weighted average of the population prior mean $\mu_0$ and the patient's running mean $\mu_t$. At $t=1$ with $\kappa_0=1$ (for illustration; see Section~3.6 on why $\kappa_0=1$ is not the recommended choice), prior and observation receive equal weight. With a small fitted $\kappa_0$, the predictive centre converges to $\mu_t$ after even one or two observations. As $t\to\infty$, $\mu_n\to\mu_t$ regardless of $\kappa_0$. This shrinkage is appropriate when the patient's overlap history is short and the individual estimate is unreliable; the magnitude of the shrinkage is controlled by fitting $\kappa_0$ from the cohort data.
+
+\noindent\textit{Connection to the branch update.} The Welford update equations for $(\mu, \sigma)$ are algebraically identical to the NIG sufficient-statistics update for $(\bar s, M_2)$: both compute the same new mean and the same new sum of squared deviations. The belief-update operator $\mathcal U_{\mathrm{W}}$ is therefore already the correct NIG update and requires no modification in Stage~B.
+
+\subsection{Stage B: Bellman Recursion}
+
+The Stage~B recursion has the same state and structure as Stage~A:
+\begin{equation}
+V_t^{\mathrm{B}}(o,D,\mu,\sigma) =
+\max_d \Bigl[
+-\hat c_t(o,d)
++ \mathbb{E}_{o' \sim \mathrm{St}_{2\alpha_n}(\mu_n,\, s_n)}
+V_{t+1}^{\mathrm{B}}\!\left(o', D+d,\; \mathcal U_{\mathrm{W}}(\mu,\sigma,o',t)\right)
+\Bigr],
+\end{equation}
+where $\alpha_n$, $\mu_n$, and $s_n$ are computed on-the-fly from $(\mu, \sigma, t)$ via equations~\eqref{eq:kappa-update}--\eqref{eq:predictive-scale}, and $\mathcal U_{\mathrm{W}}$ is unchanged from Stage~A.
+
+\subsection{Stage B: Implementation Strategy}
+
+Stage~B requires three targeted changes to Stage~A and no structural changes to the DP.
+
+\paragraph{Change 1: Fraction-indexed branch-probability tables.}
+
+In Stage~A, \code{_P_BELIEF[mi, si, j]} is precomputed once at module load using Normal CDFs and is the same for all fractions. In Stage~B, the branch probability depends on the fraction index $t$ because the Student-$t$ degrees of freedom $2\alpha_n(t)$ and predictive scale $s_n(\mu,\sigma,t)$ both depend on $t$. The precomputed table becomes:
+\begin{equation*}
+\text{\code{_P_BELIEF_NIG[t, mi, si, j]}}
+\;=\;
+P_{\mathrm{St}}\!\Bigl(\text{bin }j \;\Big|\;
+\mu_n\!\left(\mu_{\mathrm{grid}}[m_i], t\right),\;
+s_n\!\left(\mu_{\mathrm{grid}}[m_i], \sigma_{\mathrm{grid}}[s_i], t\right),\;
+2\alpha_n(t)
+\Bigr),
+\end{equation*}
+computed using Student-$t$ CDF differences with the same left/right-tail folding as Stage~A. The table shape is $(N_F, N_\mu, N_\sigma, N_o)$; for a 5-fraction treatment with the current grids this is $5\times150\times11\times441 \approx 3.6\,\text{M}$ entries ($\approx 29$\,MB), a negligible addition to module-load memory.
+
+In the current codebase, \code{_P_BELIEF} is a module-level global accessed directly inside \code{_bellman_expectation_full_grid} (not passed as a parameter). \code{_P_BELIEF_NIG} must follow the same pattern: a module-level array of shape $(N_F, N_\mu, N_\sigma, N_o)$ precomputed at module load. The first axis is \textit{0-based}: axis index 0 corresponds to $t=1$ (fraction~1), axis index $t-1$ corresponds to fraction~$t$. In the function body, replace \code{_P_BELIEF[:, :, j]} with \code{_P_BELIEF_NIG[observation_count - 1, :, :, j]}. \code{_bellman_expectation} takes branch probabilities as an explicit argument and is unaffected by this change.
+
+\noindent\textit{Variable treatment lengths.} The public solver API accepts arbitrary \code{number_of_fractions}; the table must not be hard-wired to a single treatment length. At module load, precompute the table for \code{DEFAULT_NUMBER_OF_FRACTIONS} and cache the result in a module-level variable. If a caller requests a different treatment length, recompute for that length and update the cache. This is simpler than a fully general lazy-cache keyed by an arbitrary parameter and covers all current code paths, including the existing 3-fraction and 5-fraction test cases. Add regression tests exercising both.
+
+\paragraph{Change 2: Planning-time initialisation.}
+
+At decision time for fraction $f$, \code{current_overlap_probs} is currently computed by \code{probdist} (\code{helper_functions.py}), which returns Normal CDF differences without folding tail mass into the boundary bins; the function explicitly notes that its output does not sum to~1 if the distribution extends outside \code{_VOLUME_SPACE}. Under Stage~B, this must be replaced with a Student-$t$ predictive using parameters $(\mu_n, s_n, 2\alpha_n)$ evaluated at $n=f$ from the $f$ actual observations. The replacement \emph{must} fold left and right tails into the boundary bins, matching the behaviour of \code{_P_BELIEF_NIG}, so that planning-time and forward-DP branch probabilities are computed on the same probabilistic basis.
+
+\noindent\textit{No $\sigma$ point estimate required.} The Student-$t$ predictive parameters $(\mu_n, s_n, \nu_n = 2\alpha_n)$ follow directly from the NIG sufficient statistics $(n, \bar s, M_2)$ and the fitted hyperparameters via equations~\eqref{eq:kappa-update}--\eqref{eq:predictive-scale}; the posterior does not need to be reduced to a scalar $\hat\sigma$ before the predictive can be evaluated. \code{std_calc} must not be called in the Stage~B planning-time path. If a $\sigma$-grid index is needed (for example to look up an initial DP value), the NIG posterior mode of $\sigma$ when $\sigma^2 \sim \mathrm{InvGamma}(\alpha_n, \beta_n)$ is $\sqrt{\beta_n/(\alpha_n + \tfrac{1}{2})}$. Do not use $\sqrt{\beta_n/(\alpha_n - 1)}$, which equals $\sqrt{E[\sigma^2]}$ (the square root of the posterior mean of $\sigma^2$, not the mode); at small $\alpha_n$ this overestimates $\hat\sigma$ considerably.
+
+\paragraph{Prior hyperparameters: refitting required.}
+
+Stage~A uses $(\alpha_0, \beta_0)$ (\code{DEFAULT_ALPHA}, \code{DEFAULT_BETA}) to regularise the MAP estimate of $\sigma$ via a numerical grid search in \code{std_calc}. Critically, \code{std_calc} assumes a \textit{Gamma}$(\alpha, \beta)$ prior on $\sigma$ directly (density $\propto \sigma^{\alpha-1}\exp(-\sigma/\beta)$), whereas the NIG model assumes an \textit{Inverse-Gamma}$(\alpha, \beta)$ prior on $\sigma^2$ (density $\propto (\sigma^2)^{-\alpha-1}\exp(-\beta/\sigma^2)$). These are materially different: with the current values, the Gamma prior on $\sigma$ has mode $(\alpha_0-1)\beta_0 \approx 0.06$\,cc, while the Inverse-Gamma prior on $\sigma^2$ with the same $(\alpha_0, \beta_0)$ numbers implies a $\sigma$-mode of $\sqrt{\beta_0/(\alpha_0+1)} \approx 0.61$\,cc. Reusing \code{DEFAULT_ALPHA} and \code{DEFAULT_BETA} directly in equation~\eqref{eq:beta-update} would silently produce incorrect $\beta_n$ values.
+
+Before Stage~B is implemented, new constants \code{NIG_ALPHA_0} and \code{NIG_BETA_0} must be estimated from the patient cohort under the Inverse-Gamma convention. The recommended procedure is empirical Bayes: treat each patient's overlap sequence as i.i.d.\ draws from a Normal with unknown $(\mu, \sigma^2)$, place the NIG prior on $(\mu, \sigma^2)$, and maximise the marginal log-likelihood $\sum_i \log p(o_{i,1},\dots,o_{i,f_i} \mid \mu_0, \kappa_0, \alpha_0, \beta_0)$ over the full 58-patient cohort. Since $\kappa_0$ and $\mu_0$ interact with $\alpha_0$ and $\beta_0$ through the marginal (Student-$t$) likelihood, all four parameters should be fitted jointly with $\kappa_0$ included as a free parameter (bounds $[10^{-3}, 5]$). Do not fix $\kappa_0 = 1$: the 58-patient cohort has a wide spread of overlap means (0.01--21.18\,cc), and $\kappa_0 = 1$ over-shrinks the predictive centre of extreme patients toward the population mean, which can represent a qualitative regression relative to Stage~A at early fractions. After fitting, check the Stage~B predictive centre at fraction~1 for the most extreme patients (patient~5, $\mu \approx 21$\,cc; patient~3, $\sigma \approx 4.05$\,cc) to confirm that shrinkage is clinically reasonable. Report the fitted $\kappa_0$ value prominently. The marginal likelihood for a single patient with observations $o_{1:n}$ and prior $({\mu_0, \kappa_0, \alpha_0, \beta_0})$ is a product of Student-$t$ densities with sequentially updated parameters, which follows directly from applying equations~\eqref{eq:kappa-update}--\eqref{eq:beta-update} at each step.
+
+\code{DEFAULT_ALPHA} and \code{DEFAULT_BETA} must be retained unchanged for \code{std_calc} and Stage~A initialisation. The two additional constants $\mu_0$ and $\kappa_0$ are also required and should be stored alongside \code{NIG_ALPHA_0} and \code{NIG_BETA_0} in \code{constants.py}.
+
+\paragraph{Change 3: Planning-scan termination criterion.}
+
+The current \code{precompute_plan} loop calls \code{get_state_space}, which defines the upper scanning bound from the 99.9th percentile of a Normal distribution fit to the current belief. Under Stage~B this Gaussian heuristic must not be carried over unchanged. In the near-Cauchy regime ($\alpha_0^{\mathrm{NIG}} \approx 1$, small $t$), the Student-$t$ 99.9th percentile can be an order of magnitude larger than the distribution's scale, producing an excessively slow scan or an ill-bounded upper limit. Replace the distribution-based criterion with a fixed clinically safe overlap bound combined with the existing policy-flat termination condition (policy fallen to the minimum deliverable dose). This decouples scan termination from the choice of predictive distribution and does not require re-validation when the predictive changes.
+
+\clearpage
+\section{Required Numerical Design}
+
+\subsection{State Discretisation}
+
+Stage~B uses the same $(\mu, \sigma)$ grids and the same \code{_VOLUME_SPACE} as Stage~A (Section~3.2). The belief-state resolution, value-function shape, and peak memory footprint are unchanged.
+
+\subsection{Complexity}
+
+Compared to Stage~A, Stage~B introduces:
+\begin{itemize}
+\item A fraction-indexed branch-probability table of $\approx 29$\,MB at module load (versus $\approx 6$\,MB for the Stage~A table). This is a one-time cost per process invocation.
+\item Student-$t$ CDF evaluation in place of Normal CDF during the precomputation step. \code{scipy.stats.t.cdf} is approximately $3$--$5\times$ slower per call than \code{scipy.stats.norm.cdf}; the precomputation time grows from near-instant to a few seconds, but this cost is not incurred per patient.
+\item Per-node NIG parameter computation (five arithmetic operations per $(m_i, s_i, t)$ triple) when calling \code{_bellman_expectation} with the planning-time Student-$t$ distribution. This is negligible.
+\end{itemize}
+
+Per-patient DP runtime and peak memory are expected to remain within the Stage~A budget ($\approx35$\,s and $\approx2.75$\,GB), because the per-patient Bellman loop is structurally unchanged and accesses an equally-sized branch-probability slice.
+
+\clearpage
+\section{Validation and Acceptance Criteria}
+
+\subsection{Implementation Correctness Gates}
+\begin{enumerate}
+\item Mathematical consistency: NIG posterior updates, predictive distribution, and branch-probability tables in code match this document.
+\item Functional correctness: full test suite passes, and new tests cover fraction-dependent branch probabilities, NIG initialisation, and the equivalence of the Welford update with the NIG sufficient-statistics update.
+\item Baseline lock-in: Stage~A benchmark artifacts (58-patient cohort replay) are frozen before Stage~B development begins and serve as the exclusive reference for all Stage~B comparisons.
+\item Reproducibility: deterministic outputs under fixed discretisation and random settings.
+\end{enumerate}
+
+\subsection{Evaluation Metrics}
+
+For each trajectory $i$ on the fixed 58-patient replay cohort, define:
+\begin{itemize}
+\item $B_i^{\mathrm{A}}$: Stage~A benefit,
+\item $B_i^{\mathrm{B}}$: Stage~B benefit,
+\item $B_i^{\mathrm{ideal}}$: best-case upper-bound benefit.
+\end{itemize}
+All three are measured on the same trajectory under identical simulation conditions.
+
+Primary per-trajectory improvement:
+\begin{equation}
+\Delta_i = B_i^{\mathrm{B}} - B_i^{\mathrm{A}}.
+\end{equation}
+
+Distance-to-ideal:
+\begin{equation}
+G_i^{\mathrm{A}} = B_i^{\mathrm{ideal}} - B_i^{\mathrm{A}},\qquad
+G_i^{\mathrm{B}} = B_i^{\mathrm{ideal}} - B_i^{\mathrm{B}}.
+\end{equation}
+
+Normalised gap closure:
+\begin{equation}
+R_i = \frac{B_i^{\mathrm{B}} - B_i^{\mathrm{A}}}{\max\!\bigl(B_i^{\mathrm{ideal}} - B_i^{\mathrm{A}},\;\epsilon\bigr)},
+\end{equation}
+with small $\epsilon > 0$ for numerical safety. $R_i = 0$ means no progress over Stage~A; $R_i = 1$ means the full Stage~A-to-ideal gap is closed.
+
+\subsection{Acceptance Criteria}
+\begin{enumerate}
+\item Mean improvement is positive: $\mathbb{E}[\Delta_i] > 0$ with a positive paired-bootstrap 95\% confidence-interval lower bound.
+\item Gap-to-ideal shrinks on average: $\mathbb{E}[G_i^{\mathrm{B}}] < \mathbb{E}[G_i^{\mathrm{A}}]$ and median $R_i > 0$.
+\item Tail safety is not degraded: the fraction of cases with $\Delta_i < -1$\,ccGy does not increase relative to Stage~A.
+\item Runtime and memory remain within the Stage~A budget.
+\end{enumerate}
+
+\section{Stage B Evaluation Protocol}
+
+Stage~B must be evaluated in the following order before any model-selection or simplification decisions are made:
+
+\begin{enumerate}
+\item Run the full 58-patient replay benchmark under both Stage~A and Stage~B from the same frozen artifacts.
+\item If the mean improvement is negligible ($|\mathbb{E}[\Delta_i]| < 0.01$\,ccGy): record this as a validated negative result. Stage~A is accepted as the production model and Stage~B is not promoted.
+\item If the improvement is meaningful: compare in detail across:
+\begin{enumerate}
+\item expected total penalty and mean $\Delta_i$,
+\item tail penalty at p90 and p95,
+\item per-fraction dose trajectory differences,
+\item terminal feasibility (underdose and overdose incidence),
+\item runtime and peak memory.
+\end{enumerate}
+\item Validate generalisation via leave-one-out cross-validation: for each patient, refit the NIG hyperparameters on the remaining 57 patients and evaluate on the held-out patient. Compare the LOO $\mathbb{E}[\Delta_i]$ with the in-sample estimate from step~1. If the two are within noise, proceed with the full-cohort fit for the final model. If they diverge, investigate whether the hyperparameters are absorbing cohort-specific structure before promoting Stage~B. This step applies regardless of whether the improvement in steps~2--3 is negligible or meaningful. Leave-one-out is straightforward to implement because the marginal likelihood factorises over patients and each patient's contribution can be excluded by omitting it from the sum.
+\end{enumerate}
+
+Any subsequent simplification of Stage~B — for example reverting to a Normal predictive for fractions $t \geq t^*$ where the Student-$t$ and Normal are empirically indistinguishable — must pass the same comparison protocol against the full Stage~B result before being accepted.
+
+\clearpage
+\section{Stage B: Empirical Record (Log-NIG Implementation, March 2026)}
+
+This section records what was implemented, what failed, what was fixed, and what was
+ultimately concluded during the first concrete Stage~B development effort
+(\code{feat/belief-state-dp} branch, March 2026).
+
+\subsection{Model Choice: Log-Space NIG}
+
+The original Stage~B plan (Section~3) assumed the NIG would operate on raw
+overlap values in cc.  When initial fitting of the NIG hyperparameters was
+attempted, the unconstrained optimum for $\alpha_0$ fell below the required floor
+of~1.0, indicating that the symmetric Gaussian assumption of the NIG conflicts with
+the right-skewed overlap distribution ($\text{skewness} = 2.73$ on the 58-patient
+ACTION cohort).  The NIG model was therefore fitted in log-space: each observation
+is transformed as $y_i = \log(v_i + \varepsilon)$ with $\varepsilon = 0.1$\,cc
+before the NIG update.  In log-space the distribution is near-symmetric
+($\text{skewness} = -0.15$), the NIG unimodal assumption is valid, and the
+unconstrained optimum for $\alpha_0$ is interior ($\hat\alpha_0 = 2.74$, giving
+degrees of freedom $2\alpha_0 + 1 = 6.49$ at fraction~1).
+
+The log-NIG model was fitted by empirical Bayes: maximise the sequential NIG
+marginal log-likelihood
+\[
+  \sum_{\text{patients}} \sum_{t=1}^{n} \log p\!\left(y_t \mid y_1,\dots,y_{t-1}\right)
+\]
+over the 58-patient cohort using L-BFGS-B with the reparameterisation described in
+\code{scripts/fit\_nig\_hyperparams.py} (\code{-{}-log-space} flag).  The fitted
+hyperparameters are stored in \code{constants.py} as \code{NIG\_LOG\_*}:
+
+\begin{center}
+\small
+\begin{tabular}{lll}
+\hline
+\textbf{Constant} & \textbf{Value} & \textbf{Notes} \\
+\hline
+\code{NIG\_LOG\_OFFSET}  & $0.1$\,cc   & $\varepsilon$ in $\log(v+\varepsilon)$ \\
+\code{NIG\_LOG\_MU\_0}   & $0.5230$\,nat  & Prior log-mean \\
+\code{NIG\_LOG\_KAPPA\_0}& $0.1065$    & Prior pseudo-count on mean \\
+\code{NIG\_LOG\_ALPHA\_0}& $2.7438$    & Interior solution; $\text{dof}_1 = 6.49$ \\
+\code{NIG\_LOG\_BETA\_0} & $0.5526$\,nat$^2$ & Prior log-scale \\
+\hline
+\end{tabular}
+\normalsize
+\end{center}
+
+The belief-state grid for log-NIG uses log-space coordinates: $\bar s_t = \text{running
+mean of } y_i$ (nats) and $\sigma^{\log}_t = \sqrt{M_2/t}$ (running log-standard
+deviation, nats).  The grid covers $[-2.5, 3.5]$\,nat in 100 non-uniform $\mu$
+points and $[0.05, 1.50]$\,nat in 10 $\sigma$ points
+(\code{\_MU\_GRID\_NIG}, \code{\_SIGMA\_GRID\_NIG} in \code{belief\_model.py}).
+
+\subsection{Bug: Incorrect Grid Coordinates in \texttt{\_resolve\_current\_fraction}}
+
+The initial log-NIG benchmark produced results worse than Stage~A by
+$-0.235$\,ccGy (mean, 58-patient cohort).  Investigation revealed a grid-indexing
+bug in \code{core\_adaptfx.py}: \code{\_resolve\_current\_fraction} was passing
+the NIG \emph{posterior parameters} $(\mu_n, \hat\sigma_{\mathrm{MAP}})$ as the
+DP grid lookup coordinates, whereas the precomputed branch-probability table
+\code{\_P\_BELIEF\_NIG\_CACHE} is indexed by the \emph{Welford sufficient statistics}
+$(\bar s_{\log}, \sigma^{\log}_{\mathrm{running}})$.  At fraction~2 with two
+log-observations, this mismatch produced approximately a $2\times$ error in the
+$\sigma$ coordinate.  The fix was to pass
+$(\bar s_{\log},\, \max(\sqrt{M_2/n},\, \sigma^{\log}_{\min}))$
+directly as the grid coordinates.  After the fix, the log-NIG benchmark was
+$-0.147$\,ccGy vs.\ master and $-0.235$\,ccGy vs.\ Stage~A --- still worse than
+Stage~A.
+
+\subsection{Root Cause: NIG Cross-Term Inflates Predictive Scale}
+
+With the correct grid coordinates, Stage~B remained worse than Stage~A.
+Diagnosis identified the NIG cross-term in $\beta_n$:
+\[
+  \beta_n = \beta_0 + \tfrac{M_2}{2}
+  + \underbrace{\frac{\kappa_0\,n\,(\bar s - \mu_0)^2}{2\kappa_n}}_{\text{cross-term}},
+\]
+as the structural cause.  For any patient whose log-mean $\bar s$ deviates from the
+prior mean $\mu_0 = 0.523$\,nat (corresponding to $\approx 1.6$\,cc), this term
+inflates $\beta_n$ and therefore the Student-$t$ predictive scale.  Patients with
+near-zero overlaps --- which are far below the population mean --- receive a
+substantially wider predictive than their data warrants, causing the DP to
+over-hedge: it allocates doses conservatively even when it should exploit known-low
+overlap fractions.
+
+Stage~A avoids this because its Gamma prior on $\sigma$ is independent of the mean
+estimate and is not inflated by deviations from a population prior.
+
+\subsection{Fix Attempts and Results}
+
+Three approaches were tried to remove or suppress the cross-term effect.
+
+\paragraph{Option~0: Suppress the cross-term by setting $\kappa_0 \to 0$.}
+With $\kappa_0 = 0.001$, the cross-term contributes at most
+$0.001 \times n \times (\bar s - \mu_0)^2 / 2 \lesssim 0.003$\,nat$^2$ for any
+patient --- negligible relative to $\beta_0 + M_2/2$.  This gives a closed-form
+Student-$t$ predictive with scale $\approx \sqrt{2\beta_n / \alpha_n}$ that is
+essentially free of shrinkage toward the population mean.  Result: mean delta vs.\
+Stage~A of $+0.006$\,ccGy (2 patients improved, 2 worse, 54 tied out of 58).
+
+\paragraph{Option~1: Re-fit $(\mu_0, \alpha_0, \beta_0)$ with $\kappa_0 = 0.001$
+fixed (marginal-likelihood objective).}
+Fitting with the cross-term suppressed changes the marginal-likelihood landscape;
+the unconstrained optimum shifts to $\alpha_0 = 1.527$, $\beta_0 = 0.185$
+(tighter prior scale, heavier tails).  Result: mean delta vs.\ Stage~A
+$+0.006$\,ccGy with \emph{different} patients changing direction --- no net
+improvement over Option~0.
+
+\paragraph{Option~2: Grid search over $(\alpha_0, \beta_0)$ optimising DP benefit
+directly.}
+A two-dimensional grid search (10 $\alpha_0$ values $\times$ 8 prior-scale values
+$= 80$ combinations, parameterised by $s_1 = \sqrt{2\beta_0/(\alpha_0+0.5)}$ to
+cover the space uniformly) was run on all 58 patients with $\kappa_0 = 0.001$
+fixed.  After evaluating 36 of 80 combinations (covering $\alpha_0 \in
+[0.55, 1.527]$ fully), every combination produced a negative mean delta vs.\
+Stage~A, with the best being $-0.030$\,ccGy at $(\alpha_0 = 0.75,\,
+s_1 = 0.25\,\text{nat})$.  The search was stopped at this point.
+
+\subsection{Conclusions}
+
+\begin{enumerate}
+\item The log-NIG model with $\kappa_0 = 0.001$ achieves approximate parity with
+Stage~A ($+0.006$\,ccGy mean, within the grid-quantisation noise of the
+$\pm0.005$\,ccGy floor established during the Stage~A $N_\mu$ sweep).  It does not
+meaningfully exceed Stage~A.
+
+\item Direct optimisation of DP benefit over hyperparameters did not find any
+$(\alpha_0, \beta_0)$ combination that beats Stage~A.  The pattern across 36 grid
+points is uniformly negative, with no sign of an unexplored positive region.
+
+\item The 54/58 tied patients have dose trajectories that are identical under
+Stage~A and log-NIG regardless of hyperparameters.  Improvement can only come from
+the 4~patients where models differ; the Student-$t$ tails help high-variability
+patients and hurt near-zero-overlap patients (log-floor effect at
+$\log(0 + 0.1) \approx -2.30$\,nat), netting close to zero.
+
+\item \textbf{The semi-conjugate model (independent Normal prior on $\mu$,
+Inverse-Gamma prior on $\sigma^2$) is mathematically equivalent to $\kappa_0 \to
+0$ for this predictive family.}  Since $\kappa_0 = 0.001$ already approximates this
+limit to within $0.003$\,nat$^2$ in $\beta_n$, implementing the semi-conjugate
+model in full generality would reproduce the Option~0 result.  It is not a
+promising avenue.
+
+\item The fundamental obstacle is that the log-Student-$t$ predictive in
+log-space does not systematically improve DP dose decisions over the Gaussian
+predictive in cc-space for this cohort.  The log-transform floor
+($v = 0 \mapsto \log 0.1 \approx -2.30$\,nat$\approx -2.30$\,nat) clusters near-zero
+overlap observations artificially, making Stage~A's cc-space Gaussian more
+naturally concentrated near zero for the near-zero-overlap patients.
+\end{enumerate}
+
+\subsection{Status of Stage B in the Codebase}
+
+The log-NIG implementation (\code{use\_nig=True}) is present in
+\code{core\_adaptfx.py} and \code{belief\_model.py} and passes all non-slow tests.
+It is \emph{not} the default code path (\code{use\_nig=False} by default).  The
+implementation is correct (bug fixed, grid coordinates consistent) and the
+hyperparameters in \code{constants.py} reflect the best configuration found
+($\kappa_0 = 0.001$, empirically Bayes-fitted $\alpha_0, \beta_0$).  Given the
+evaluation results above, Stage~B in its current form is not recommended for
+production use.  Any future attempt to exceed Stage~A should consider:
+
+\begin{itemize}
+\item A different transform or mixture model that avoids the log-floor problem for
+near-zero-overlap patients while retaining the right-skew correction for typical
+patients.
+\item Directly optimising the predictive distribution for DP performance rather than
+marginal likelihood, with early stopping guided by the 58-patient benchmark rather
+than by convergence of the likelihood objective.
+\item A fundamentally different belief model (e.g.\ non-parametric or copula-based)
+that does not assume exchangeability across fractions.
+\end{itemize}
+
+\end{document}

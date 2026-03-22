@@ -1,0 +1,426 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{longtable}
+\usepackage{array}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\DeclareRobustCommand{\code}[1]{\ifmmode\text{\texttt{\detokenize{#1}}}\else\texttt{\detokenize{#1}}\fi}
+\newcommand{\BN}{B_N}
+\newcommand{\BT}{B_T}
+\newcommand{\Dpres}{D_{\mathrm{pres}}}
+\newcommand{\ctotal}{c_{\mathrm{total}}}
+
+\title{Notation Crosswalk\\2023 Paper, 2025 Paper, and Current Codebase}
+\author{Internal repository note}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+This note maps the mathematical notation in the 2023 paper, the 2025 paper, and the current Python implementation. It is organized by \emph{concept}, not by symbol, so that semantic mismatches are visible instead of hidden behind renaming.
+
+The goal is practical: when extending the repository, we want to know which parts are simple notation changes and which parts are true model changes.
+
+\section{Sources}
+
+\begin{itemize}
+\item 2023 paper transcription: \code{docs/papers/2023}, file \code{AdaptiveFractionation_2023Paper.tex}
+\item 2025 paper transcription: \code{docs/papers/2025}, file \code{Overlap_Adaptive_Fractionation_2025Paper.tex}
+\item Core solver: package \code{adaptive_fractionation_overlap}, module \code{core_adaptfx.py}
+\item Helper functions: package \code{adaptive_fractionation_overlap}, module \code{helper_functions.py}
+\item Constants: package \code{adaptive_fractionation_overlap}, module \code{constants.py}
+\end{itemize}
+
+\section{Global Crosswalk}
+
+\begin{longtable}{L{0.18\linewidth}L{0.25\linewidth}L{0.25\linewidth}L{0.24\linewidth}}
+\hline
+\textbf{Concept} & \textbf{2023 paper} & \textbf{2025 paper} & \textbf{Current codebase} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Concept} & \textbf{2023 paper} & \textbf{2025 paper} & \textbf{Current codebase} \\
+\hline
+\endhead
+Geometry descriptor & Sparing factor $\delta_t = d_t^N / d_t$ & Overlap volume $o_t$ in cc & \code{volumes}, \code{actual_volume}, \code{volume_space} \\
+\hline
+Per-fraction decision variable & Tumor dose $d_t$ & PTV dose $d_t$ & \code{physical_dose}, candidate actions \code{delivered_doses} \\
+\hline
+Accumulated treatment state & OAR BED $\BN$; appendix also tumor BED $\BT$ & Cumulative delivered physical dose $D_t = \sum_{\tau < t} d_\tau$ & \code{accumulated_dose}; discretized as \code{dose_space} \\
+\hline
+Primary objective & Maximize expected tumor BED10 subject to OAR BED3 limit & Minimize expected cumulative overlap-based underdosage cost subject to exact total PTV dose & Maximize negative penalty, which is equivalent to minimizing a penalized overlap cost under an exact total physical-dose target \\
+\hline
+Immediate stage term & Reward $r_t = d_t + d_t^2 / (\alpha/\beta)_T$ & Cost $c_t = o_t (d_t - d_{\min})$ & Penalty $\hat c_t = o_t(d_t-d_{\min}) + \frac{1}{2}\vert b + m o_t \vert (d_t-d_{\min})^2$ via \code{penalty_calc_*} \\
+\hline
+Terminal condition & $-\infty$ if final OAR BED exceeds $\BN^{\max}$ & $0$ if total dose reaches $\Dpres$, $\infty$ otherwise & Large negative sentinel value if underdose or overdose occurs; exact goal enforced by hard penalty \\
+\hline
+Probability model & $\delta_t \sim \mathcal N(\mu,\sigma^2)$, truncated at $0$ in prose & $o_t \sim \mathcal N(\mu,\sigma^2)$ & \code{norm(loc=volumes.mean(), scale=std_calc(...))}; overlap grid clipped at $0$ after probabilities are computed \\
+\hline
+Mean update & $\mu_t = \frac{1}{t+1}\sum_{\tau=0}^{t}\delta_\tau$ & $\mu_t = \frac{1}{t+1}\sum_{\tau=0}^{t}o_\tau$ & \code{volumes.mean()} inside each solver call \\
+\hline
+Variance / standard deviation update & MAP estimate with gamma prior over $\sigma$ & Same idea for overlap standard deviation & \code{std_calc(measured_data, alpha, beta)} with defaults from \code{constants.py} \\
+\hline
+State variable in MDP equations & Base model: $s_t = (\delta_t,\BN)$, i.e.\ 2 state coordinates if time is handled separately; appendix: $(\delta_t,\BN,\BT)$, i.e.\ 3 state coordinates if time is handled separately & $s_t = (o_t,D_t)$, i.e.\ 2 state coordinates if time is handled separately & Online decision variables are effectively $(o_t,D_t)$ plus the clinical fraction index outside the tuple; stored DP array is 3D: time-to-go $\times$ accumulated dose $\times$ overlap \\
+\hline
+Estimated distribution parameters inside state? & No. $\mu_t$ and $\sigma_t$ are updated from observations, but not added as explicit Bellman state coordinates in the main formulation. & No. $\mu_t$ and $\sigma_t$ are re-estimated during treatment, but the paper explicitly keeps them outside the MDP state used in the recursion. & No. \code{volumes.mean()} and \code{std_calc(...)} are recomputed once per solver call and then treated as fixed model inputs for that solve. \\
+\hline
+Action bounds & $d_t \in [d_{\min},d_{\max}]$ & $d_t \in [d_{\min},d_{\max}]$ & \code{DEFAULT_MIN_DOSE = 6}, \code{DEFAULT_MAX_DOSE = 10}, clipped further by \code{max_action(...)} \\
+\hline
+Policy object & $\pi_t(\delta,\BN)$ or $\pi_t(\delta,\BN,\BT)$ & $\pi_t(o,D)$ & \code{policies} stores full future policy grid; \code{policies_overlap} stores current-fraction policy over overlap grid \\
+\hline
+Value object & $v_t(\delta,\BN)$ or appendix extension & $v_t(o,D)$ & \code{values[state, dose_index, volume_index]} \\
+\hline
+Time indexing & Clinical fraction index $t$ & Clinical fraction index $t$ & Backward-recursion index \code{state} counts time-to-go, not clinical time directly \\
+\hline
+Prescription target & OAR BED limit $\BN^{\max}$ drives feasible set & Exact total prescribed physical dose $\Dpres$ & \code{goal = number_of_fractions * mean_dose} \\
+\hline
+\end{longtable}
+
+\section{Equation-Level Translation}
+
+\subsection{2023 Paper}
+
+The 2023 paper formulates adaptive fractionation in BED space. The geometry term is the sparing factor $\delta_t$, the state tracks cumulative OAR BED, and the immediate stage term is a \emph{reward} in tumor BED:
+\begin{align}
+s_t^{2023} &= (\delta_t, \BN), \\
+r_t^{2023}(d_t) &= d_t + \frac{d_t^2}{(\alpha/\beta)_T}.
+\end{align}
+
+Written with time explicit, the base 2023 Bellman state is therefore
+\begin{equation}
+\text{state}_{2023,\mathrm{base}} = (t,\delta_t,\BN),
+\end{equation}
+which is a finite-horizon process with two non-time state coordinates. In the appendix, cumulative tumor BED is added:
+\noindent\textit{In simple words.} In the main 2023 model, the algorithm needs to know three things at decision time: which fraction we are in, what today's sparing factor is, and how much OAR BED has already been accumulated.
+
+\begin{equation}
+\text{state}_{2023,\mathrm{appendix}} = (t,\delta_t,\BN,\BT),
+\end{equation}
+which raises the non-time state dimensionality from 2 to 3.
+\noindent\textit{In simple words.} The appendix adds one more memory variable: how much tumor BED has already been delivered. That makes the policy depend on both OAR history and tumor history.
+
+The Bellman recursion is therefore a maximization over expected future reward subject to a terminal OAR BED constraint:
+\begin{equation}
+v_t(\delta,\BN) =
+\max_d \left[
+d + \frac{d^2}{(\alpha/\beta)_T}
++ \sum_{\delta'} P(\delta') v_{t+1}\!\left(\delta', \BN + \delta d + \frac{\delta^2 d^2}{(\alpha/\beta)_N}\right)
+\right].
+\end{equation}
+\noindent\textit{In simple words.} At each fraction, the 2023 policy chooses the dose that gives the best tumor-BED reward now plus the best expected reward later, while accounting for the OAR BED that this dose adds.
+
+The appendix then shows a state extension in which cumulative tumor BED is added explicitly. That appendix is the closest paper-level precedent for increasing state dimensionality in this repository.
+
+\subsection{2025 Paper}
+
+The 2025 paper changes the geometry descriptor from sparing factor to overlap volume and changes the optimization target from tumor-BED reward to overlap-based cost minimization:
+\begin{align}
+s_t^{2025} &= (o_t, D_t), \\
+c_t^{2025}(o_t,d_t) &= o_t(d_t-d_{\min}).
+\end{align}
+
+Written with time explicit, the 2025 Bellman state is
+\begin{equation}
+\text{state}_{2025} = (t,o_t,D_t),
+\end{equation}
+which is again a finite-horizon process with two non-time state coordinates. The important point is that the paper does \emph{not} include $(\mu_t,\sigma_t)$ inside this state tuple. They are updated between fractions and then used to define the transition model for the next solve, but the recursion itself is written only over overlap and accumulated dose.
+\noindent\textit{In simple words.} In the 2025 model, the policy needs to know what fraction we are in, how much overlap we see today, and how much dose has already been delivered. It does not treat the estimated mean and standard deviation as state variables.
+
+The 2025 paper also contains a second mathematical object that is easy to confuse with the treatment loss: its equation~(6) is the MAP estimator for $\sigma_t$, not the stage cost and not the Bellman objective. In paper notation,
+\begin{equation}
+\sigma_t = \arg\max_{\sigma} \; p(\sigma \mid o_0,\ldots,o_t).
+\end{equation}
+So equation~(6) does \emph{not} minimize treatment loss at all. It maximizes a posterior density over possible values of the future-overlap standard deviation. Its role is purely to choose the parameter that shapes the next-step overlap distribution $P(o')$ used inside dynamic programming.
+\noindent\textit{In simple words.} Read this as: ``given the overlap values we have seen so far, choose the standard deviation that looks most plausible.'' It is an uncertainty-fitting step, not a dose-selection step.
+
+\paragraph{How the paper updates $\mu_t$ and $\sigma_t$ from fraction to fraction.}
+The paper's online update loop is easiest to read as a short sequence:
+\begin{enumerate}
+\item Start fraction $t$ with the overlap history observed so far, $o_0,\ldots,o_t$.
+\item Recompute the running mean
+\[
+\mu_t = \frac{1}{t+1}\sum_{\tau=0}^{t} o_\tau.
+\]
+\noindent\textit{In simple words.} This is just the average of all overlap values seen so far. Early in treatment, one new overlap can move this average a lot. Later in treatment, the same new overlap moves it less because it is being averaged together with more past observations.
+\item Recompute the patient-specific empirical spread $\sigma_t^{\mathrm{pat}}$ from that same history.
+\noindent\textit{In simple words.} The paper also recomputes how spread out the patient's observed overlaps have been. As more fractions are observed, this spread estimate usually becomes more stable as well.
+\item Combine $\sigma_t^{\mathrm{pat}}$ with the gamma prior to obtain the MAP estimate $\sigma_t$ via equation~(6).
+\item Use the updated pair $(\mu_t,\sigma_t)$ to define the distribution of the next overlap, $o_{t+1} \sim \mathcal N(\mu_t,\sigma_t^2)$.
+\noindent\textit{In simple words.} After updating the mean and standard deviation from the overlaps seen so far, the paper uses those two numbers as its current model for the next fraction's overlap.
+\item Solve the Bellman recursion for the current fraction under that fixed transition model.
+\item After the next fraction is observed, append the new overlap to the history and repeat the update.
+\end{enumerate}
+\noindent\textit{In simple words.} The paper is doing: ``observe one more overlap, update the mean, update the uncertainty, then solve today's dose decision using those updated beliefs about the future.''
+
+\noindent\textit{Code pointers.} In the repository, the same update appears in the core solver module \code{core_adaptfx.py}. That module lives in package \code{adaptive_fractionation_overlap}. Specifically, \code{std = std_calc(volumes, alpha, beta)} appears at line 161, followed by \code{distribution = norm(loc = volumes.mean(), scale = std)} at line 162. The underlying MAP-style standard-deviation calculation is implemented in \code{helper_functions.py} from the same package, lines 48--79. A second copy of the same update appears in \code{precompute_plan(...)} at lines 313--314 of \code{core_adaptfx.py}. The code-level analogue of ``append the newly observed overlap and repeat'' can be seen in line 321 of \code{core_adaptfx.py}, where \code{np.append(volumes, volume)} is passed into \code{adaptive_fractionation_core(...)}.
+
+That separation is important:
+\begin{itemize}
+\item paper equation~(1) defines the one-step loss, $c_t = o_t(d_t-d_{\min})$,
+\item paper equation~(6) estimates $\sigma_t$,
+\item paper equation~(10) minimizes expected total future loss using the current estimates of $\mu_t$ and $\sigma_t$.
+\end{itemize}
+
+The quantity that the policy actually minimizes is therefore not ``equation~(6)'', but the expected cumulative overlap-weighted underdosage cost:
+\begin{equation}
+\mathbb{E}\!\left[\sum_{\tau=t}^{F} o_\tau(d_\tau-d_{\min}) + c_{F+1}\right].
+\end{equation}
+Equation~(6) matters only indirectly: a larger estimated $\sigma_t$ spreads probability mass over a wider range of future overlaps, which can make the current action more conservative or more opportunistic depending on the remaining dose budget.
+\noindent\textit{In simple words.} The real goal is: choose today's dose so that the total overlap penalty from today to the end of treatment is as small as possible, while still finishing the prescription.
+
+Its Bellman recursion is therefore a minimization:
+\begin{equation}
+v_t(o,D) =
+\min_{d \in [d_{\min},d_{\max}]}
+\left[
+o(d-d_{\min}) + \sum_{o'} P(o') v_{t+1}(o', D+d)
+\right].
+\end{equation}
+\noindent\textit{In simple words.} At each fraction, the 2025 policy looks for the daily dose that minimizes two things added together: the penalty you pay today because of today's overlap, and the expected penalty you will pay in the remaining fractions.
+
+The terminal condition enforces exact delivery of the prescribed total dose:
+\begin{equation}
+c_{F+1} =
+\begin{cases}
+0 & \text{if the final cumulative dose reaches } \Dpres,\\
+\infty & \text{otherwise.}
+\end{cases}
+\end{equation}
+\noindent\textit{In simple words.} If the full prescribed dose has been delivered by the end, there is no extra penalty. If not, the plan is treated as infeasible.
+
+\subsection{Current Code}
+
+The current code is closest in spirit to the 2025 paper, but not identical to it. The solver in \code{adaptive_fractionation_core(...)} estimates
+\begin{align}
+\hat \mu_t &= \mathrm{mean}(\code{volumes}), \\
+\hat \sigma_t &= \code{std_calc(volumes, alpha, beta)},
+\end{align}
+builds a Gaussian model for future overlap, discretizes overlap and accumulated dose, and solves a backward dynamic program.
+\noindent\textit{In simple words.} The code follows the same outer loop as the paper: after each new observed fraction, recompute the mean and standard deviation from the full observed history, then solve the current fraction using those fixed values.
+
+Written with time explicit, the implemented online decision state is best understood as
+\begin{equation}
+\text{state}_{\mathrm{impl,online}} = (t,o_t,D_t),
+\end{equation}
+while the stored DP tensor is indexed as
+\begin{equation}
+\text{state}_{\mathrm{impl,array}} = (\text{time-to-go}, D, o).
+\end{equation}
+So the implementation is solving a finite-horizon process with two non-time state coordinates, but it stores time as an explicit array axis rather than burying it in the notation.
+\noindent\textit{In simple words.} Conceptually, the code is solving the same kind of problem as the 2025 paper: ``what do I do at this fraction, for this overlap, given the dose already delivered?'' Internally, it stores that as a 3D table with time as a separate axis.
+
+The implemented one-step penalty is
+\begin{equation}
+\hat c_t(o,d) =
+o(d-d_{\min})
++
+\frac{1}{2}\left| \code{INTERCEPT} + \code{SLOPE}\cdot o \right|(d-d_{\min})^2,
+\label{eq:implemented-penalty}
+\end{equation}
+as encoded in \code{penalty_calc_single(...)} and \code{penalty_calc_matrix(...)}. This is stricter than the 2025 paper's base linear cost.
+\noindent\textit{In simple words.} The code penalizes giving extra dose on overlap days twice: once with the paper's basic linear penalty, and again with an extra quadratic penalty that grows faster when the chosen dose moves further above $d_{\min}$.
+
+Because the code stores values as utilities to be maximized, the implemented recursion is best read as
+\begin{equation}
+V_t^{\mathrm{impl}}(o,D) =
+\max_d \left[
+-\hat c_t(o,d) + \mathbb E_{o'} V_{t+1}^{\mathrm{impl}}(o', D+d)
+\right],
+\end{equation}
+with infeasible end states given a very large negative value rather than a symbolic $\infty$.
+\noindent\textit{In simple words.} The code is still doing cost minimization in spirit. It just flips the sign so the solver can maximize ``negative cost now plus best expected value later.''
+
+\section{Semantic Mismatches That Matter}
+
+\subsection{2023 Paper vs.\ 2025 Paper}
+
+The 2023 and 2025 papers are not minor notational variants of the same MDP.
+
+\begin{itemize}
+\item The geometry descriptor changes from sparing factor $\delta_t$ to overlap volume $o_t$.
+\item The accumulated state changes from OAR BED $\BN$ to cumulative delivered physical dose $D_t$.
+\item The objective changes from maximizing tumor BED to minimizing overlap-driven underdosage.
+\item The terminal feasibility condition changes from an OAR-BED ceiling to an exact tumor-dose target.
+\end{itemize}
+
+This means the 2025 paper is not just ``the 2023 paper with renamed symbols''; it is a different control problem motivated by a different clinical bottleneck.
+
+\subsection{2025 Paper vs.\ Code}
+
+The code is again not a literal transcription of the 2025 paper.
+
+\begin{itemize}
+\item The paper's stage cost is linear in overlap and excess dose. The code adds the quadratic correction in equation~\eqref{eq:implemented-penalty}.
+\item The paper writes the MDP state as $(o_t,D_t)$. The code's solved object is effectively indexed by time-to-go, accumulated-dose grid, and overlap grid.
+\item The paper discusses $\mu_t$ and $\sigma_t$ as updated during treatment. The code updates them once per solver call and then treats them as fixed model parameters for that solve.
+\item The paper writes a clean terminal cost. The code uses the sentinel value \code{-1000000000000} to represent infeasible terminal states.
+\item The code computes probabilities on the pre-clipped Gaussian grid and only then clips negative overlap states to zero, so the implemented distribution handling is numerically convenient rather than mathematically exact.
+\end{itemize}
+
+\subsection{Paper State vs.\ Implemented State}
+
+The cleanest way to compare dimensionality is to separate ``time'' from ``state coordinates that the policy conditions on'':
+\begin{itemize}
+\item 2023 main text: 2 non-time coordinates, $(\delta_t,\BN)$.
+\item 2023 appendix: 3 non-time coordinates, $(\delta_t,\BN,\BT)$.
+\item 2025 paper: 2 non-time coordinates, $(o_t,D_t)$.
+\item current code: 2 non-time coordinates in the decision rule, $(o_t,D_t)$, plus one explicit DP axis for time-to-go.
+\end{itemize}
+
+If time is written explicitly, the implemented finite-horizon decision process is most naturally described as
+\begin{equation}
+\text{state}_{\mathrm{impl}} = (t, D_t, o_t),
+\end{equation}
+with distribution parameters $(\mu_t,\sigma_t)$ estimated from the observed history but not represented as explicit state coordinates inside the DP table.
+\noindent\textit{In simple words.} If you say the state out loud, it is: ``which fraction is this, how much dose have we already used, and how much overlap do we see right now?''
+
+At the array level, the current implementation uses
+\begin{equation}
+\text{DP tensor shape} = \text{time-to-go} \times \text{accumulated dose} \times \text{overlap}.
+\end{equation}
+\noindent\textit{In simple words.} The solver stores one value table entry for every combination of remaining time, accumulated dose bucket, and overlap bucket.
+
+That distinction matters because a future extension can change either
+\begin{itemize}
+\item the \emph{online state used by the policy}, or
+\item the \emph{state dimensions explicitly enumerated in the DP tables},
+\end{itemize}
+and those are related but not identical design choices.
+
+\section{Extension Implications}
+
+If the intended extension is to make overlap mean and standard deviation explicit state variables, then the natural finite-horizon mathematical state becomes
+\begin{equation}
+s_t^{\mathrm{extended}} = (o_t, D_t, \mu_t, \sigma_t)
+\end{equation}
+\noindent\textit{In simple words.} This extension would mean the policy no longer depends only on today's overlap and the delivered dose so far. It would also depend explicitly on what the model currently believes about the average future overlap and how uncertain that belief still is.
+
+The main conceptual gain is not merely higher dimensionality. The main gain is that the decision process can represent \emph{learning during treatment}. In the current implementation, the solver estimates
+\begin{align}
+\hat \mu_t &= \mathrm{mean}(\code{volumes}), \\
+\hat \sigma_t &= \code{std_calc(volumes, alpha, beta)},
+\end{align}
+once at the start of the solve and then treats the future overlap distribution as fixed for all remaining fractions in that solve. In code, this happens at lines 161--162 of \code{core_adaptfx.py} in package \code{adaptive_fractionation_overlap}. The current Bellman recursion therefore distinguishes early and late fractions mainly by remaining time and remaining dose budget, not by how much confidence has been gained about the patient's personal overlap distribution.
+
+\noindent\textit{In simple words.} Right now the code says: ``based on what I know today, I will assume the same overlap distribution for the rest of this solve.'' It does not explicitly reason about the fact that after the next fraction we will have learned more.
+
+If $(\mu_t,\sigma_t)$ become part of the state and are updated by observed overlaps, then the next state carries not only a new overlap and a new cumulative dose, but also a new belief about future overlaps. This changes the meaning of the value function. The recursion is no longer evaluating only
+\begin{quote}
+``what is the best dose if today's overlap is $o_t$ and the delivered dose so far is $D_t$?''
+\end{quote}
+It is also evaluating
+\begin{quote}
+``what is the best dose given what I currently believe about this patient's future overlap distribution, knowing that belief itself will be updated after the next observation?''
+\end{quote}
+
+\noindent\textit{In simple words.} The state would start to encode not just the patient's geometry, but also the algorithm's current level of knowledge about that geometry.
+
+That matters clinically and algorithmically because later fractions should be more informed than earlier fractions. After more observations, the patient-specific overlap model should usually be less uncertain. A richer state can therefore support policies with behavior such as:
+\begin{itemize}
+\item being more cautious in early fractions, because the estimated overlap distribution is still unstable,
+\item preserving dose flexibility while the model is still learning whether this patient tends to have favorable or unfavorable geometry,
+\item acting more decisively in later fractions, because the belief about the overlap distribution has been refined by additional measurements.
+\end{itemize}
+
+\noindent\textit{In simple words.} With this extension, the algorithm could explicitly reason: ``I am still uncertain, so I may want to wait,'' versus ``I now know this patient's pattern better, so I can commit more confidently.''
+
+This is also the point at which the extension becomes more than a reparameterization. The transition model would become a \emph{belief update} model: observing the next overlap would update the physical-treatment part of the state $(o_t,D_t)$ and the statistical-belief part of the state $(\mu_t,\sigma_t)$.
+
+Relative to the current implementation, that is not a cosmetic patch. It changes:
+\begin{itemize}
+\item what information the policy conditions on,
+\item the transition model, because $(\mu_t,\sigma_t)$ would now update as part of the controlled process,
+\item the interpretation of the value function, which would now include the value of future information,
+\item the memory and runtime complexity,
+\item the policy object, which would no longer be a function of overlap and accumulated dose alone.
+\end{itemize}
+
+The coherent interpretation used in this note is that the triple $(t,\mu_t,\sigma_t)$ already carries a practical notion of certainty. Time $t$ tells us how many overlap observations have been incorporated. The pair $(\mu_t,\sigma_t)$ summarizes the current fitted overlap model. The update rule then makes those summaries progressively less sensitive to one new observation as treatment proceeds.
+
+For the mean, this can be written recursively as
+\[
+\mu_{t+1} = \mu_t + \frac{o_{t+1}-\mu_t}{t+2}.
+\]
+\noindent\textit{In simple words.} Start from today's mean estimate. Then move it part of the way toward the newly observed overlap. That step size is $1/(t+2)$, so early fractions can change the estimate a lot, while later fractions change it only a little.
+
+This means that if the state contains $(t,\mu_t,\sigma_t)$ and the transition law updates those quantities in the same way as the estimation procedure, then the model is already carrying an operational notion of confidence: later belief states are harder to move because they are based on more accumulated evidence.
+
+\noindent\textit{In simple words.} The certainty is not stored as a separate variable called ``confidence.'' Instead, it shows up in how stable the belief state has become. Early on, one new observation can change the state a lot. Later on, the same observation changes it much less.
+
+Under this interpretation, a separate confidence variable is not required for a first implementation. The state itself, together with its update law, already represents learning over time. This representation is estimator-based rather than fully Bayesian: it tracks the current fitted parameters and how stable they have become, not a full probability distribution over all plausible parameter values.
+
+\noindent\textit{In simple words.} A 5D state can already do the job if we define it carefully. It captures the idea that our belief becomes more stable over time. Extra posterior variables would only be needed later if we decide we want a stricter Bayesian description of uncertainty, rather than this practical estimator-based one.
+
+The 2023 appendix is useful here because it already demonstrates the logic of promoting an accumulated quantity into the state. The same pattern can be reused conceptually when deciding whether $(\mu_t,\sigma_t)$ should remain estimated parameters or become true state variables.
+
+\section{Code Mapping Appendix}
+
+\begin{longtable}{L{0.28\linewidth}L{0.2\linewidth}L{0.42\linewidth}}
+\hline
+\textbf{Code symbol / function} & \textbf{Closest paper concept} & \textbf{Role in implementation} \\
+\hline
+\endfirsthead
+\hline
+\textbf{Code symbol / function} & \textbf{Closest paper concept} & \textbf{Role in implementation} \\
+\hline
+\endhead
+\code{fraction} & Time index $t$ & Clinical fraction currently being solved \\
+\hline
+\code{volumes} & $\{o_\tau\}$ & Observed overlap history up to the current call \\
+\hline
+\code{actual_volume} & $o_t$ & Most recently observed overlap, i.e.\ the current geometry \\
+\hline
+\code{accumulated_dose} & $D_t$ & Cumulative delivered physical dose before current fraction \\
+\hline
+\code{goal} & $\Dpres$ & Total prescribed physical dose, defined as \code{number_of_fractions * mean_dose} \\
+\hline
+\code{std_calc(...)} & $\sigma_t$ update & Computes a MAP-like standard-deviation estimate using a gamma prior \\
+\hline
+\code{distribution} & $P(o)$ or $P(\delta)$ & Gaussian model for future overlap values in the current solve \\
+\hline
+\code{volume_space} & Discretized overlap state & 200-point overlap grid from the estimated Gaussian \\
+\hline
+\code{probabilities} & $P(o')$ & Probability masses attached to the overlap grid \\
+\hline
+\code{dose_space} & Discretized $D_t$ & Grid of accumulated physical-dose states \\
+\hline
+\code{delivered_doses} & Action space & Candidate per-fraction doses between \code{min_dose} and \code{max_dose} \\
+\hline
+\code{max_action(...)} & Feasibility restriction & Removes actions that would overshoot the total goal \\
+\hline
+\code{values} & $v_t(\cdot)$ or $V_t(\cdot)$ & DP value tensor over future states \\
+\hline
+\code{policies} & $\pi_t(\cdot)$ & DP policy tensor over future states \\
+\hline
+\code{policies_overlap} & Slice of $\pi_t$ at current accumulated dose & Current-fraction dose recommendation as a function of overlap \\
+\hline
+\code{physical_dose} & Chosen action $d_t$ & Actual dose selected for the observed current overlap \\
+\hline
+\code{penalty_calc_single(...)} & Immediate cost & Scores one dose-overlap pair \\
+\hline
+\code{penalty_calc_matrix(...)} & Immediate cost over grid & Scores all dose-overlap combinations used in DP \\
+\hline
+\code{adaptfx_full(...)} & Policy rollout & Applies the single-fraction solver sequentially over a full treatment course \\
+\hline
+\code{precompute_plan(...)} & Policy sweep over hypothetical $o_t$ & Builds a lookup table from overlap value to recommended dose \\
+\hline
+\code{policy_calc(...)} & Fixed-distribution variant & Solves the same DP using externally supplied mean and standard deviation \\
+\hline
+\end{longtable}
+
+\section{Practical Reading Rule}
+
+When reading or modifying this repository, the safest translation is:
+\begin{enumerate}
+\item Start from the 2025 paper, because it is the nearest conceptual ancestor of the current solver.
+\item Treat the 2023 appendix as the template for ``what it means to add a state dimension''.
+\item Treat the current Python code as a \emph{paper-inspired implementation}, not as a verbatim encoding of either paper.
+\end{enumerate}
+
+That framing keeps the next design step honest: if we extend the MDP, we should state clearly whether we are following a paper exactly, borrowing a paper's structural idea, or deliberately introducing a new model.
+
+\end{document}

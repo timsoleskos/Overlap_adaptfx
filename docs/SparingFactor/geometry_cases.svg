@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="680" viewBox="0 0 1200 680">
+  <rect width="1200" height="680" fill="#fcfcf8"/>
+
+  <text x="40" y="48" font-family="Helvetica, Arial, sans-serif" font-size="30" font-weight="700" fill="#222">
+    Toy geometry examples for the sparing factor
+  </text>
+  <text x="40" y="82" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    SF = D1cc(OAR) / D95(PTV)
+  </text>
+
+  <line x1="600" y1="110" x2="600" y2="640" stroke="#d6d1c4" stroke-width="2"/>
+
+  <text x="70" y="130" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#222">
+    Case A: separated structures
+  </text>
+  <text x="70" y="158" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#444">
+    Geometry changes mainly change OAR spill, so SF can move with anatomy.
+  </text>
+
+  <circle cx="240" cy="280" r="120" fill="#f17b6a" fill-opacity="0.28" stroke="#c9574a" stroke-width="4"/>
+  <circle cx="420" cy="170" r="70" fill="#7ab86b" fill-opacity="0.30" stroke="#4c8d45" stroke-width="4"/>
+
+  <text x="185" y="286" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#9d3127">
+    PTV
+  </text>
+  <text x="388" y="176" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#2f6f2f">
+    OAR
+  </text>
+
+  <line x1="337" y1="224" x2="363" y2="208" stroke="#666" stroke-width="3"/>
+  <polygon points="363,208 355,220 372,217" fill="#666"/>
+  <text x="250" y="210" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#555">
+    distance between structures
+  </text>
+
+  <rect x="70" y="420" width="470" height="180" rx="14" fill="#fff6e8" stroke="#d5b67a" stroke-width="2"/>
+  <text x="95" y="455" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#5c4822">
+    Toy numbers
+  </text>
+  <text x="95" y="490" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    PTV volume = 40 cc
+  </text>
+  <text x="95" y="520" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    OAR D1cc = 3 Gy
+  </text>
+  <text x="95" y="550" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    PTV D95 = 10 Gy
+  </text>
+  <text x="95" y="580" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#222">
+    SF = 3 / 10 = 0.30
+  </text>
+
+  <text x="650" y="130" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#222">
+    Case B: direct overlap
+  </text>
+  <text x="650" y="158" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#444">
+    The same overlap-limited region can control both D1cc(OAR) and D95(PTV).
+  </text>
+
+  <circle cx="810" cy="275" r="120" fill="#f17b6a" fill-opacity="0.28" stroke="#c9574a" stroke-width="4"/>
+  <circle cx="930" cy="265" r="98" fill="#7ab86b" fill-opacity="0.30" stroke="#4c8d45" stroke-width="4"/>
+  <ellipse cx="870" cy="270" rx="52" ry="86" fill="#efd33a" fill-opacity="0.72" stroke="#d1ac18" stroke-width="2"/>
+
+  <text x="755" y="281" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#9d3127">
+    PTV
+  </text>
+  <text x="898" y="270" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#2f6f2f">
+    OAR
+  </text>
+  <text x="835" y="365" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#7d6500">
+    overlap
+  </text>
+
+  <rect x="650" y="420" width="485" height="180" rx="14" fill="#fff6e8" stroke="#d5b67a" stroke-width="2"/>
+  <text x="675" y="455" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#5c4822">
+    Toy numbers
+  </text>
+  <text x="675" y="490" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    Overlap-limited region capped at 6 Gy
+  </text>
+  <text x="675" y="520" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    OAR D1cc is pulled to about 6 Gy
+  </text>
+  <text x="675" y="550" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    PTV D95 is also pulled to about 6 Gy
+  </text>
+  <text x="675" y="580" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#222">
+    SF is about 6 / 6 = 1.00
+  </text>
+
+  <rect x="40" y="620" width="1120" height="36" rx="10" fill="#f0efe8" stroke="#d2d0c4" stroke-width="1"/>
+  <text x="58" y="643" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#333">
+    Key point: SF uses two dose quantiles. It does not directly measure how many cubic centimeters overlap.
+  </text>
+</svg>

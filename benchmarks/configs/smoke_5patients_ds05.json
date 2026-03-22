@@ -1,0 +1,21 @@
+{
+  "name": "smoke_5patients_ds05",
+  "description": "Fast smoke benchmark over first 5 ACTION patients.",
+  "dataset_path": "evaluation/ACTION_patients_overlap_only.xlsx",
+  "number_of_fractions": 5,
+  "min_dose": 6.0,
+  "dose_step": 0.5,
+  "patient_limit": 5,
+  "max_dose_policy": {
+    "default": 10.0,
+    "mean_gt_8_lte_9": 11.0,
+    "mean_gt_9": 12.0
+  },
+  "upper_bound": {
+    "enabled": true,
+    "step": 0.5
+  },
+  "metrics": {
+    "tail_disadvantage_threshold": -1.0
+  }
+}

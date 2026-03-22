@@ -1,0 +1,2404 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{verbatim}
+\usepackage{alltt}
+\usepackage{array}
+\usepackage{url}
+\usepackage[table]{xcolor}
+
+% ── Convenience macros ──────────────────────────────────────────────────────
+\DeclareRobustCommand{\code}[1]{\ifmmode\text{\texttt{\detokenize{#1}}}\else\texttt{\detokenize{#1}}\fi}
+\newcommand{\Dgoal}{D_{\mathrm{goal}}}
+\newcommand{\dmin}{d_{\min}}
+\newcommand{\dmax}{d_{\max}}
+\newcommand{\dmean}{\bar{d}}
+\newcommand{\sigmin}{\sigma_{\min}}
+
+\theoremstyle{definition}
+\newtheorem{keyidea}{Key Idea}[section]
+\newtheorem{example}{Example}[section]
+\newtheorem{note}{Note}[section]
+
+% ── Document ─────────────────────────────────────────────────────────────────
+\title{%
+  5D Belief-State Adaptive Fractionation Solver\\[6pt]
+  \large A Developer Tutorial for \code{adaptive_fractionation_overlap}
+}
+\author{Internal repository design note}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document is a \emph{developer tutorial}: a teaching-oriented, in-depth
+walkthrough of the 5D belief-state adaptive fractionation solver
+used in the \code{adaptive_fractionation_overlap} package. Its main
+implementation lives in \code{core_adaptfx.py}, together with the
+supporting modules (\code{belief_model.py} and \code{helper_functions.py}).  It is written in a tutorial style, with
+deliberate repetition across multiple abstraction levels, and is \emph{not}
+optimised for skimming or quick lookup.  Readers who want a concise
+implementation reference should read the code directly; this document is for
+those who want to understand \emph{why} the code is structured the way it is.
+
+The target reader is comfortable with Python but may not have a background in
+dynamic programming, Bayesian statistics, or NumPy's advanced features.
+Every mathematical concept is explained in plain language before its formal
+definition.  Every non-trivial code path is reproduced verbatim alongside the
+equations it implements, with prose explaining what each step achieves.
+Familiarity with the clinical context (adaptive fractionation, overlap
+volumes, dose prescription) is assumed; this document explains the
+\emph{algorithm}, not the Clinical Implementation.  Readers who want the high-level design
+rationale and the plan for Stage~B (full Normal-Inverse-Gamma belief state)
+should consult \code{DimensionalityExtensionPlan.tex} in the same
+directory.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+%% ============================================================
+\section{High-Level Overview}
+%% ============================================================
+
+\subsection{What the algorithm does}
+
+At each fraction of treatment, the algorithm receives:
+\begin{itemize}
+  \item all overlap volumes observed so far: $o_0, o_1, \ldots, o_f$
+        (cubic centimetres).  $o_0$ is the overlap measured during the
+        \emph{planning scan} --- an imaging session before treatment
+        begins, from which the treatment plan is made.  $o_1, \ldots, o_f$
+        are the overlaps measured at each delivered treatment fraction.
+        The algorithm is \emph{not} called at the planning scan (there is
+        no dose to deliver then), but $o_0$ is always included in
+        \code{volumes} from fraction~1 onwards.  At fraction~$f$,
+        \code{volumes} therefore has $f + 1$ elements, and
+        \code{volumes[-1]} is always the current fraction's overlap.
+  \item the accumulated dose to PTV already delivered before fraction $f$:
+        $D_f = \sum_{k=1}^{f-1} d_k$ (Gy); note that because $d_k$ is drawn
+        from the discretised action grid, $D_f$ only takes values that are
+        multiples of $\delta_d$ (the dose step size, defined in the next bullet);
+  \item clinical bounds on the treatment (total fractions $F$, minimum
+        dose per fraction $\dmin$, maximum dose to PTV per fraction $\dmax$, prescribed mean
+        $\dmean$, dose step size $\delta_d$).
+\end{itemize}
+It returns one number: the recommended dose $d_f$ for the current fraction.
+
+The algorithm's goal is to \emph{plan all remaining fractions at once}, not
+just the current one, so that the chosen dose today is the best possible
+choice in light of uncertain future overlaps (``best'' is defined by the
+penalty function in Section~\ref{sec:penalty}: the algorithm minimises the
+expected total PTV underdosage cost, defined in Section~\ref{sec:penalty}), while aiming to deliver the
+total prescribed dose $\Dgoal = F \cdot \dmean$ (total fractions times
+prescribed mean fraction dose, from the input list above) exactly when the
+problem
+is feasible within the action bounds (see Section~\ref{sec:feasibility}
+for the cases where exact delivery is not guaranteed).
+
+\subsection{How the 5D Extension improves the 3D baseline}
+
+The 3D baseline solver used a fixed probability distribution over future overlaps,
+estimated once from all observed data and never revised as the DP explored
+hypothetical futures.  In essence, the 5D extension personalises the algorithm: it
+learns each patient's overlap pattern as fractions are delivered, and plans
+future doses based on that evolving picture.
+
+The 5D extension adds a \emph{running belief} $(\mu, \sigma)$ to the planning state.
+This belief tracks a running estimate of the patient's typical overlap and its
+variability.  Crucially, when the dynamic program imagines a hypothetical future
+overlap $o'$, it also updates the belief as if $o'$ had actually been observed.
+This means each hypothetical future has a distinct view of the patient, leading
+to appropriately different future decisions.
+
+\subsection{File map}
+
+\begin{center}
+\begin{tabular}{|l|l|}
+\hline
+\rowcolor{gray!25}\textbf{File} & \textbf{Role} \\
+\hline
+\code{core_adaptfx.py} & Main DP solver, Numba kernel, public API \\
+\hline
+\code{belief_model.py} & Belief grids, branch probabilities, Bellman operators \\
+\hline
+\code{helper_functions.py} & Mathematical building blocks \\
+\hline
+\code{constants.py} & Default numerical parameters \\
+\hline
+\end{tabular}
+\end{center}
+
+\clearpage
+%% ============================================================
+\section{Background Concepts}
+%% ============================================================
+
+This section builds up all the ideas needed to understand the algorithm from
+first principles.  Readers who are comfortable with dynamic programming and
+Bayesian inference may skim this section.
+
+%% ─────────────────────────────────────────────
+\subsection{Dynamic programming --- the core idea}
+\label{sec:dp_intro}
+%% ─────────────────────────────────────────────
+
+Dynamic programming (DP) is a method for making a \emph{sequence of
+decisions} optimally.  The key insight is: instead of trying to think about
+all future decisions simultaneously (which is exponentially hard), we work
+\emph{backwards} from the last decision to the first.
+
+To make this concrete, think about a 5-fraction treatment:
+\begin{enumerate}
+  \item Fraction~1: entering with accumulated dose $D = 0$;
+        OAR--PTV overlap $o_1$~cc; we deliver $d_1$ to the PTV.
+  \item Fraction~2: entering with $D = d_1$;
+        overlap $o_2$~cc; we deliver $d_2$.
+  \item Fraction~3: entering with $D = d_1 + d_2$;
+        overlap $o_3$~cc; we deliver $d_3$.
+  \item Fraction~4: entering with $D = d_1 + d_2 + d_3$;
+        overlap $o_4$~cc; we deliver $d_4$.
+  \item Fraction~5: entering with $D = d_1 + d_2 + d_3 + d_4$;
+        overlap $o_5$~cc; we deliver $d_5 = \Dgoal - D$,
+        the exact remaining dose needed to hit the prescription.
+\end{enumerate}
+We cannot choose all five doses upfront because we do not yet know the
+overlaps for fractions 2--5.  But we can ask: ``\emph{if} I am at fraction~4
+with accumulated dose $D$ and overlap $o_4$, what is the best
+possible outcome from here?''  DP answers exactly this question, for every
+possible $(D, o)$ combination.
+
+\paragraph{State.}
+A \emph{state} is a complete description of the situation at a given point in
+time.  For our algorithm, the state at fraction $t$ is:
+\[
+  \text{state}_t = (t,\; D,\; o,\; \mu,\; \sigma).
+\]
+This captures \emph{everything} the algorithm needs to make a good decision
+at fraction $t$: which fraction we are on ($t$), how much dose has been
+accumulated ($D$), what today's overlap is ($o$), and what the running
+belief about the patient's distribution looks like ($\mu, \sigma$).
+
+\paragraph{Value function.}
+The \emph{value function} of a state is the maximum total reward achievable
+from that state onwards, using optimal decisions.  The \emph{reward} at
+each fraction is the negative of the PTV underdosage penalty $-c(d, o)$:
+because the OAR's dose limit forces the shared PTV--OAR tissue to receive
+at most $\dmin$, any dose $d > \dmin$ comes at a cost proportional to the
+overlap volume~$o$.  Maximising accumulated reward is therefore equivalent
+to minimising total PTV underdosage over the full course of treatment.  We write the value function as
+$V_t(D, o, \mu, \sigma)$.
+
+Think of the value function as the answer to: ``starting in this state,
+what is the best possible PTV coverage I can achieve from here to the
+end of treatment?''
+
+\paragraph{Policy.}
+A \emph{policy} is the decision rule: given the current state, which dose
+should I deliver?  Once we have the value function, the policy at any state
+is simply the action that achieves the value function maximum:
+\[
+  \pi_t(D, o, \mu, \sigma)
+  = \arg\max_{d}\!\left[-c(d,o) + \text{expected future value after delivering } d\right].
+\]
+The cost function $c(d, o)$ is defined precisely in Section~\ref{sec:penalty};
+informally, it captures the PTV underdosage incurred when OAR overlap
+prevents the full prescription from being delivered to the shared tissue.  The Bellman equation below uses the same notation.
+
+\paragraph{The Bellman equation --- value function defined recursively.}
+The core mathematical identity of dynamic programming is the \emph{Bellman
+equation}.  In words: ``the value function at a state is the immediate reward
+of the best action, plus the expected value of the state I will be in
+afterwards.''  In symbols:
+\begin{equation}
+  V_t(D, o, \mu, \sigma)
+  = \max_{d \in \mathcal{A}(D)}
+    \Bigl[\underbrace{-c(d,o)}_{\text{immediate reward}}
+    + \underbrace{\mathbb{E}_{o'}\!\left[V_{t+1}(D+d, o', \mu', \sigma')\right]}_{\text{expected future value}}\Bigr].
+  \label{eq:bellman_words}
+\end{equation}
+Here $\mathcal{A}(D)$ is the set of deliverable doses to the PTV at the
+current treatment fraction (doses that neither undershoot nor overshoot the
+prescription target given the remaining fractions).
+The expectation $\mathbb{E}_{o'}$ averages over all possible next overlaps
+$o'$, weighted by their probability.  The updated belief $(\mu', \sigma')$
+depends on which $o'$ was hypothetically observed.
+
+\paragraph{Why go backwards?}
+To compute $V_t$ we need $V_{t+1}$.  To compute $V_{t+1}$ we need $V_{t+2}$.
+This chain keeps going until we reach the \emph{last fraction}, where the
+decision is forced (deliver exactly the remaining PTV prescription).
+So we start there and compute the value function at the final fraction~$F$,
+$V_F$, directly, then work backwards: $V_{F-1}$ uses $V_F$, $V_{F-2}$ uses
+$V_{F-1}$, and so on until we reach $V_f$, which gives us the optimal dose
+for the current fraction.
+
+This is why the loop in \code{adaptive_fractionation_core}
+(\code{core_adaptfx.py}) runs from \code{i=0} (corresponding to the
+last fraction $F$) up to the current fraction $f$:
+
+\begin{verbatim}
+# In _build_dp_context (core_adaptfx.py):
+for i, fraction_number in enumerate(
+        np.arange(number_of_fractions, fraction_index_today, -1)):
+    observation_count = int(fraction_number)
+    if i != 0:
+        # Hypothetical future fractions: fill values[i]
+        # for all belief-grid (mi, si) entries.
+        ...
+    else:
+        # Terminal fraction (i == 0).
+        ...
+\end{verbatim}
+
+\noindent
+\code{np.arange(number_of_fractions, fraction_index_today, -1)} generates
+$[F, F-1, \ldots, f+1]$, so \code{i=0} always corresponds to fraction $F$
+(the terminal fraction), and the loop covers only \emph{future} fractions.
+The current fraction~$f$ is resolved separately in
+\code{_resolve_current_fraction}, which calls \code{_bellman_expectation}
+with the actual starting belief.
+
+\paragraph{Reward vs.\ penalty sign convention.}
+The algorithm \emph{maximises} cumulative reward.  The reward for delivering
+dose $d$ with overlap $o$ is defined as the \emph{negative} of the penalty:
+$-c(d,o)$.  A large overlap with a high dose is heavily penalised (large
+$c$), which becomes a very negative reward, which the maximiser avoids.
+Equivalently, you can think of the algorithm as minimising total penalty ---
+the sign flip is just a convention so that DP (which is stated as a
+maximisation) applies directly.
+
+%% ─────────────────────────────────────────────
+\subsection{Probabilistic modelling --- prior, posterior, and MAP}
+\label{sec:bayes_intro}
+%% ─────────────────────────────────────────────
+
+\paragraph{What is a probability distribution over parameters?}
+We model each patient's overlaps as drawn from a Normal distribution
+$\mathcal{N}(\mu, \sigma^2)$, where $\mu$ is the patient's typical overlap
+and $\sigma$ is how variable it is across fractions.  In reality, we do not
+know $\mu$ and $\sigma$; we have to \emph{estimate} them from the observed
+overlaps.
+
+\paragraph{Prior: knowledge before seeing data.}
+Before observing anything about a specific patient, we have population-level
+knowledge: across many patients, the variability $\sigma$ tends to be small
+and positive, rarely exceeding a few cc.  We encode this as a
+\emph{prior distribution} over $\sigma$ --- a probability distribution
+expressing our beliefs about $\sigma$ before we see any data.  The
+algorithm uses a \emph{Gamma distribution} as the prior:
+\[
+  \sigma \sim \mathrm{Gamma}(\alpha, \beta),
+\]
+where $\alpha$ and $\beta$ are fitted from historical patient data.  The
+Gamma distribution is always positive (good, since $\sigma$ must be positive)
+and right-skewed (most patients have small variability; a few have large).
+
+\paragraph{Likelihood: what the data tells us.}
+After observing $n$ overlaps $o_1, \ldots, o_n$, we can ask: how likely is
+this data if the true standard deviation were $\sigma$?  This is the
+\emph{likelihood} $L(\sigma \mid o_{1:n})$.
+
+\paragraph{Posterior: combining prior and data.}
+Bayes' rule says the posterior distribution (our updated belief after seeing
+data) is proportional to the prior times the likelihood:
+\[
+  p(\sigma \mid o_{1:n}) \propto p(\sigma) \cdot L(\sigma \mid o_{1:n}).
+\]
+In plain English: the posterior is our belief about $\sigma$ after combining
+what we knew before (the prior) with what the data told us (the likelihood).
+
+\paragraph{MAP: the single best estimate.}
+The \emph{maximum a posteriori} (MAP) estimate is the value of $\sigma$ that
+makes the posterior largest --- the mode of the posterior distribution.
+Formally,
+\[
+  \hat{\sigma}_{\mathrm{MAP}} = \arg\max_{\sigma}\; p(\sigma \mid o_{1:n}).
+\]
+This is a single number, not a full distribution.  Using MAP gives us a
+principled single estimate that automatically incorporates both the data and
+the prior.
+
+A key property of MAP: when $n = 1$ (only one overlap observed), the
+sample variance is zero, which would give $\hat\sigma = 0$ and break the
+model.  The MAP estimate avoids this by pulling toward the prior when data
+is scarce.
+
+%% ─────────────────────────────────────────────
+\subsection{Hypothetical branches: imagining future overlaps}
+\label{sec:branches_intro}
+%% ─────────────────────────────────────────────
+
+At online re-planning time, we do not know what future overlaps will be.  The DP
+handles this by \emph{imagining every possible future overlap} and weighting
+outcomes by probability.  Each imagined future is called a \emph{branch}.
+
+In the 5D extension, when the DP imagines a hypothetical
+next overlap $o'$, it does two things:
+\begin{enumerate}
+  \item It computes the probability of $o'$ under the current belief
+        $(\mu, \sigma)$.
+  \item It updates the belief as if $o'$ had been observed, producing
+        a new belief $(\mu', \sigma')$ specific to that branch.
+\end{enumerate}
+
+The second point is the core innovation of the 5D extension.  Different hypothetical
+overlaps lead to different updated beliefs, and those different beliefs lead
+to different optimal decisions for subsequent fractions.  A branch where all
+future overlaps are large will learn that this patient has high overlap, and
+plan conservatively.  A branch where overlaps are small will learn the
+opposite.  The benefit is largest for patients whose true intra-fraction
+variability deviates most from the population average: highly variable
+patients are identified earlier and dosed more conservatively, while
+consistent patients are identified and dosed more aggressively.
+
+\paragraph{How branches are handled computationally.}
+We discretise the possible overlap volumes into a finite grid of $J$ bins.  For each
+belief $(\mu, \sigma)$, branch $j$ has probability $p_j$ (computed from the
+Normal distribution) and leads to an updated belief $(\mu'_j, \sigma'_j)$.
+The expected future value is then the weighted average:
+\[
+  \mathbb{E}_{o'}\!\left[V_{t+1}(\ldots)\right]
+  = \sum_{j=0}^{J-1} p_j \cdot V_{t+1}(\ldots\text{at branch-}j\text{ belief}\ldots).
+\]
+
+%% ─────────────────────────────────────────────
+\subsection{Running mean and variance: Welford's algorithm}
+\label{sec:welford_intro}
+%% ─────────────────────────────────────────────
+
+To update the belief $(\mu, \sigma)$ when a new overlap $o'$ is added, we
+need a formula for the new running mean and standard deviation.  The
+\emph{Welford algorithm} does this without storing all previous observations.
+
+Suppose we have seen $n$ values with mean $\mu$ and population standard
+deviation $\sigma$.  When we add one more value $o'$:
+
+\begin{enumerate}
+  \item Compute the new mean:
+    \[
+      \mu' = \frac{n\,\mu + o'}{n+1}.
+    \]
+    This is simply the weighted average of the old mean (weight $n$) and the
+    new value (weight $1$).  Intuitively: as $n$ grows large, a single new
+    value barely moves the mean.
+
+  \item Compute the new variance using the two-factor Welford formula:
+    \[
+      (\sigma')^2 = \frac{n\,\sigma^2 + (o' - \mu)(o' - \mu')}{n+1}.
+    \]
+    The term $(o' - \mu)(o' - \mu')$ measures how much the new value
+    ``surprises'' the distribution.  If $o'$ is close to the old mean, the
+    variance barely changes.  If $o'$ is far away, the variance grows.
+\end{enumerate}
+
+The formula uses \emph{population variance}; for a full derivation and
+worked examples see \url{https://changyaochen.github.io/welford/}.
+
+The corresponding code, taken from \code{_hypothetical_belief_grid_indices} in
+\code{belief_model.py}:
+
+\begin{verbatim}
+mu_prime     = (observation_count * mu + o_prime) / (observation_count + 1)
+sigma2_prime = (observation_count * sigma**2
+                + (o_prime - mu) * (o_prime - mu_prime)) / (observation_count + 1)
+sigma_prime  = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN**2))
+\end{verbatim}
+
+\noindent
+Here \code{o_prime} is the hypothetical next overlap (a scalar or array),
+\code{observation_count} is the current observation count, and \code{_SIGMA_MIN} is a
+hard floor that prevents degenerate zero-variance beliefs.
+
+%% ─────────────────────────────────────────────
+\subsection{NumPy broadcasting: arrays of different shapes computed together}
+\label{sec:broadcasting_intro}
+%% ─────────────────────────────────────────────
+
+Several places in the code perform calculations over three-dimensional grids
+of $(\mu_i, \sigma_s, o_j)$ values at once.  NumPy achieves this with
+\emph{broadcasting}: arrays with compatible shapes are automatically expanded
+to match each other without copying data.
+
+\begin{example}[Broadcasting over a 2-D grid]
+Suppose we want to compute $\mu_i + o_j$ for every pair of values from two
+arrays $\mu = [1, 2, 3]$ (shape $(3,)$) and $o = [10, 20]$ (shape $(2,)$).
+We reshape $\mu$ to shape $(3, 1)$ and $o$ to shape $(1, 2)$; NumPy then
+produces a $(3, 2)$ result automatically:
+\[
+\begin{pmatrix} 1 \\ 2 \\ 3 \end{pmatrix}
++
+\begin{pmatrix} 10 & 20 \end{pmatrix}
+=
+\begin{pmatrix} 11 & 21 \\ 12 & 22 \\ 13 & 23 \end{pmatrix}.
+\]
+In Python: \code{mu[:, None] + o[None, :]} gives exactly this.  The
+\code{None} inserts a length-1 axis, telling NumPy which dimensions to
+broadcast over.
+\end{example}
+
+In the code, three-dimensional broadcasting like
+\code{mu[:, None, None] + o[None, None, :]} produces a
+$(N_\mu, 1, J)$-shaped result that NumPy expands to $(N_\mu, N_\sigma, J)$
+when combined with a $(1, N_\sigma, 1)$-shaped sigma array.  This computes
+the Welford update for \emph{all} $N_\mu \times N_\sigma \times J$
+combinations at once in a single vectorised pass.  The relevant lines from
+\code{belief_model.py} are:
+
+\begin{verbatim}
+mu_vals    = _MU_GRID[:, None, None]       # shape (N_mu, 1, 1)
+sigma_vals = _SIGMA_GRID[None, :, None]    # shape (1, N_sigma, 1)
+o_vals     = _VOLUME_SPACE[None, None, :]  # shape (1, 1, N_overlap)
+
+mu_prime     = (observation_count * mu_vals + o_vals) / (observation_count + 1)
+delta        = o_vals - mu_vals
+delta_prime  = o_vals - mu_prime
+sigma2_prime = (observation_count * sigma_vals**2 + delta * delta_prime) / (observation_count + 1)
+\end{verbatim}
+
+\noindent
+Each assignment produces a full $(N_\mu, N_\sigma, N_\text{overlap})$
+array via broadcasting, with no explicit Python loops over the grid axes.
+
+%% ─────────────────────────────────────────────
+\subsection{NumPy advanced indexing: gathering values at irregular positions}
+\label{sec:fancy_indexing_intro}
+%% ─────────────────────────────────────────────
+
+Standard NumPy indexing selects a rectangular sub-array (e.g.\
+\code{A[2:5, 0:3]}).  \emph{Advanced indexing} (also called fancy indexing)
+uses an array of indices to gather values at arbitrary, non-contiguous
+positions.
+
+\begin{example}[Fancy indexing]
+If \code{A = [10, 20, 30, 40, 50]} and \code{idx = [0, 3, 1]}, then
+\code{A[idx]} gives \code{[10, 40, 20]}.  The index array can have any
+shape, and the output shape matches.
+\end{example}
+
+The algorithm uses this to look up, for each overlap branch $j$, the value
+stored at the \emph{updated} belief indices
+$(\code{next_mi}[j], \code{next_si}[j])$, where different $j$'s point
+to different positions in the value table.  A plain slice cannot express this
+because the positions are irregular: each branch $j$ corresponds to a
+different hypothetical overlap $o_j$, which after the Welford update lands on
+a different $(\mu', \sigma')$ grid cell.  The resulting index arrays
+\code{next_mi} and \code{next_si} are in general non-contiguous ---
+branch 0 might land on grid cell $(3, 1)$ while branch 1 lands on $(3, 2)$
+and branch 2 on $(5, 1)$ --- so there is no rectangular slice that selects
+exactly these cells.
+
+\clearpage
+%% ============================================================
+\section{Parameters, Constants, and Notation}
+%% ============================================================
+
+\subsection{Clinical parameters}
+
+\begin{center}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Python name} & \textbf{Symbol} & \textbf{Meaning} \\
+\hline
+\code{number_of_fractions} & $F$ & Total fractions in the treatment course \\
+\code{min_dose} & $\dmin$ & Minimum allowed fraction dose (Gy) \\
+\code{max_dose} & $\dmax$ & Maximum allowed fraction dose (Gy) \\
+\code{mean_dose} & $\dmean$ & Prescribed mean fraction dose (Gy) \\
+\code{dose_steps} & $\delta_d$ & Dose grid step size (Gy) \\
+\code{alpha}, \code{beta} & $\alpha,\beta$ & Gamma prior shape and scale on $\sigma$ (standard deviation) \\
+\code{accumulated_dose} & $D_f$ & Total dose delivered before fraction $f$ \\
+\code{volumes} & $o_{0:f}$ & Planning scan + all treatment-fraction overlaps so far (cc); \code{volumes[-1]} is today's \\
+\hline
+\end{tabular}
+\end{center}
+
+Default values (from \code{constants.py}):
+
+\begin{verbatim}
+DEFAULT_MIN_DOSE  = 6.0
+DEFAULT_MAX_DOSE  = 10.0
+DEFAULT_MEAN_DOSE = 8.0
+DEFAULT_DOSE_STEPS = 0.5
+DEFAULT_NUMBER_OF_FRACTIONS = 5
+DEFAULT_ALPHA = 1.072846744379587
+DEFAULT_BETA  = 0.7788684130749829
+\end{verbatim}
+
+The prescribed goal dose is
+\begin{equation}
+  \Dgoal = F \cdot \dmean.
+  \label{eq:goal}
+\end{equation}
+For the defaults this is $5 \times 8 = 40$~Gy.  Hard feasibility:
+the treatment is considered infeasible if $\Dgoal$ cannot be reached
+within the action bounds (see Section~\ref{sec:feasibility}).
+
+\subsection{Penalty function constants}
+
+Two constants govern the shape of the per-fraction cost (from
+\code{constants.py}):
+
+\begin{verbatim}
+SLOPE     = -0.65   # penalty steepness per cc of overlap
+INTERCEPT = 0.0
+\end{verbatim}
+
+Their role is explained in Section~\ref{sec:penalty}, where the full
+penalty formula is derived.
+
+\clearpage
+%% ============================================================
+\section{Helper Functions}
+\label{sec:helpers}
+%% ============================================================
+
+This section documents each function in \code{helper_functions.py}.
+For each function we explain the purpose in plain language, give the
+mathematical formula, and show the exact code.
+
+%% ────────────────────────────────────────────────────────────
+\subsection{\code{std_calc} --- MAP estimate of the overlap standard deviation}
+\label{sec:std_calc}
+%% ────────────────────────────────────────────────────────────
+
+\paragraph{Purpose.}
+Given $n$ observed overlap volumes and the Gamma prior hyperparameters, this
+function returns the single best estimate of the patient's overlap standard
+deviation $\sigma$.  ``Best'' here means the MAP estimate: the value of
+$\sigma$ that makes the posterior probability $p(\sigma \mid o_{1:n})$
+largest.
+
+\paragraph{Why not just use the sample standard deviation?}
+With only 1 observation the sample standard deviation is zero (or undefined
+with Bessel's correction), which would make the model degenerate.  The MAP
+estimate avoids this by incorporating the Gamma prior, which pulls the
+estimate toward a plausible non-zero value when data is scarce.
+
+\paragraph{Mathematical derivation.}
+We model overlaps as $o_i \sim \mathcal{N}(\mu, \sigma^2)$, with the
+unknown mean $\mu$ replaced by the sample mean $\bar{o}$.  Per the 2025
+paper (equation~(5) and Figure~3), the prior is placed on the standard
+deviation:
+\[
+  \sigma \sim \mathrm{Gamma}(\alpha, \beta).
+\]
+
+\textbf{Step~1: Bayes in log form.}
+By Bayes' theorem, $p(\sigma \mid o_{1:n}) \propto p(\sigma) \cdot
+L(\sigma \mid o_{1:n})$.  Taking logarithms (which does not change where
+the maximum is):
+\[
+  \log p(\sigma \mid o_{1:n})
+  = \underbrace{\log p(\sigma)}_{\text{log-prior}}
+  + \underbrace{\log L(\sigma \mid o_{1:n})}_{\text{log-likelihood}}
+  + \text{const}.
+\]
+
+\textbf{Step~2: log-prior.}
+For $\sigma \sim \mathrm{Gamma}(\alpha,\beta)$:
+\[
+  \log p(\sigma) = (\alpha-1)\ln\sigma - \frac{\sigma}{\beta} + \text{const}.
+\]
+
+\textbf{Step~3: log-likelihood.}
+With $\mu$ replaced by the sample mean (profile likelihood), the Normal
+log-likelihood for $n$ observations with sample variance $s^2$ is:
+\[
+  \log L(\sigma \mid o_{1:n})
+  = -(n-1)\ln\sigma - \frac{n s^2}{2\sigma^2} + \text{const}.
+\]
+The exponent is $n-1$ rather than $n$ because estimating $\mu$ from the
+data consumes one degree of freedom (the same reason sample variance
+divides by $n-1$, Bessel's correction).
+
+\textbf{Step~4: combine.}
+Adding the two terms and dropping constants gives the log-posterior
+$\ell(\sigma)$:
+\begin{equation}
+  \ell(\sigma) =
+  (\alpha-1)\ln\sigma
+  - (n-1)\ln\sigma
+  - \frac{\sigma}{\beta}
+  - \frac{s^2}{2\,\sigma^2/n},
+  \label{eq:logpost}
+\end{equation}
+where $s^2 = \mathrm{Var}(o_{0:n-1})$ is the population variance of all
+$n$ observed overlaps (including the planning scan).  Each term has a
+clear origin:
+\begin{itemize}
+  \item $(\alpha-1)\ln\sigma$: log-prior shape term;
+  \item $-(n-1)\ln\sigma$: log-likelihood normalisation, with one degree
+        of freedom used for estimating $\mu$;
+  \item $-\sigma/\beta$: log-prior scale term;
+  \item $-s^2/(2\sigma^2/n)$: log-likelihood data-fit term.
+\end{itemize}
+
+\textbf{Step~5: from log-posterior to code.}
+The MAP estimate is $\arg\max_\sigma \ell(\sigma)$.  Because the
+exponential function is monotone, maximising $\ell(\sigma)$ is identical
+to maximising $\exp(\ell(\sigma))$ --- the un-normalised posterior.  The
+code exploits this: instead of differentiating $\ell(\sigma)$ analytically
+(which yields a cubic equation with no clean closed form), it evaluates
+$\exp(\ell(\sigma))$ on a fine grid and takes the argmax.  The variable
+\code{likelihood_values} in the snippet below is $\exp(\ell(\sigma))$,
+not $\ell(\sigma)$ itself:
+
+\begin{verbatim}
+def std_calc(measured_data, alpha, beta):
+    n = len(measured_data)
+    std_values = np.arange(0.001, 10, 0.001)
+    measured_variance = np.var(measured_data)
+    likelihood_values = (
+        std_values ** (alpha - 1)
+        / std_values ** (n - 1)
+        * np.exp(-1 / beta * std_values)
+        * np.exp(-measured_variance / (2 * (std_values**2 / n)))
+    )
+    std = std_values[np.argmax(likelihood_values)]
+    return std
+\end{verbatim}
+
+The expression \code{likelihood_values} is exactly $\exp(\ell(\sigma))$:
+\begin{itemize}
+  \item \code{std_values**(alpha-1)}: $\sigma^{\alpha-1}$, the prior shape term.
+  \item \code{/ std_values**(n-1)}: $\sigma^{-(n-1)}$, the likelihood normalisation.
+  \item \code{np.exp(-1/beta * std_values)}: $e^{-\sigma/\beta}$, the prior rate term.
+  \item \code{np.exp(-measured_variance / (2 * std_values**2 / n))}: the data fit term.
+\end{itemize}
+
+\begin{note}
+The grid scan over 9{,}999 values might seem crude, but the MAP of a
+log-concave posterior is smooth and the step size $0.001$~cc gives more
+than adequate precision for a clinical dose planner.
+\end{note}
+
+%% ────────────────────────────────────────────────────────────
+\subsection{\code{get_state_space} --- patient-specific overlap grid}
+\label{sec:get_state_space}
+%% ────────────────────────────────────────────────────────────
+
+\paragraph{Purpose.}
+Given a Normal distribution $\mathcal{N}(\mu, \sigma^2)$, construct an
+e.g.\ 200-point grid spanning the interval that contains 99.8\% of the
+distribution's probability mass.  This grid is used for display purposes
+and for the \code{precompute_plan} scanning loop
+(\code{precompute_plan} sweeps over a range of possible current-fraction
+overlap values and returns the dose the algorithm would recommend for
+each, producing a dose--overlap response curve for visualisation); it is
+\emph{not} used as the DP's overlap state space
+(see Section~\ref{sec:volumespace} for why).
+
+\begin{verbatim}
+def get_state_space(distribution):
+    mean_volume, std_volume = distribution
+    lower_bound = norm.ppf(0.001, loc=mean_volume, scale=std_volume)
+    upper_bound = norm.ppf(0.999, loc=mean_volume, scale=std_volume)
+    return np.linspace(lower_bound, upper_bound, 200)
+\end{verbatim}
+
+\code{norm.ppf(0.001, ...)} is the 0.1th percentile of the Normal
+distribution (the inverse CDF, also called the percent-point function).
+Here $\Phi$ denotes the standard Normal CDF and $\Phi^{-1}$ its inverse
+(the quantile function); the resulting grid spans
+$[\Phi^{-1}(0.001;\mu,\sigma),\; \Phi^{-1}(0.999;\mu,\sigma)]$
+with equally spaced points.
+
+%% ────────────────────────────────────────────────────────────
+\subsection{\code{probdist} --- bin probabilities for an overlap distribution}
+\label{sec:probdist}
+%% ────────────────────────────────────────────────────────────
+
+\paragraph{Purpose.}
+Given a Normal distribution and a discrete grid of overlap values, compute
+the probability that the next overlap falls in each grid bin.  Think of each
+grid point as the centre of a bin of width $h$; this function asks: ``what
+fraction of the distribution's mass lands in each bin?''
+
+\paragraph{Formula.}
+For a grid with uniform spacing $h$ and bin centres $c_0, c_1, \ldots$,
+the probability of landing in bin $j$ is the area under the Normal density
+between $c_j - h/2$ and $c_j + h/2$:
+\begin{equation}
+  p_j = \Phi\!\left(\frac{c_j + h/2 - \mu}{\sigma}\right)
+        - \Phi\!\left(\frac{c_j - h/2 - \mu}{\sigma}\right),
+  \label{eq:probdist}
+\end{equation}
+where $\Phi$ is the standard Normal CDF.
+
+\begin{verbatim}
+def probdist(X, state_space):
+    spacing = state_space[1] - state_space[0]
+    upper_bounds = state_space + spacing / 2
+    lower_bounds = state_space - spacing / 2
+    mean_volume, std_volume = X
+    prob = norm.cdf(upper_bounds, loc=mean_volume, scale=std_volume) \
+         - norm.cdf(lower_bounds, loc=mean_volume, scale=std_volume)
+    return prob
+\end{verbatim}
+
+\begin{note}
+This function does \emph{not} assign left/right tail probability to the edge
+bins.  If the distribution extends beyond the grid, the probabilities will
+sum to slightly less than~1.  This is acceptable for the initial-belief
+probability vector (\code{current_overlap_probs}) because \code{_VOLUME_SPACE} is
+wide enough to cover any realistic patient.  The belief-grid branch
+probabilities \code{_P_BELIEF} handle tails explicitly (Section~\ref{sec:pbelief}).
+\end{note}
+
+%% ────────────────────────────────────────────────────────────
+\subsection{Penalty functions}
+\label{sec:penalty}
+%% ────────────────────────────────────────────────────────────
+
+\paragraph{Purpose.}
+These functions compute the ``cost'' of delivering a given dose when the
+overlap volume is a given value.  The penalty is zero when the dose equals
+the minimum ($d = \dmin$) and grows as dose rises above $\dmin$.
+
+Intuitively: $\dmin$ is the OAR dose limit.  At $d = \dmin$, the dose
+delivered to the PTV matches this limit exactly --- the OAR's constraint
+is fully met and the PTV in the overlap region receives its prescribed
+dose without underdosage.  The penalty only accrues for $d > \dmin$:
+delivering more than $\dmin$ to the PTV means the overlap tissue, which
+is capped at $\dmin$ by the OAR constraint, is underdosed by
+$(d - \dmin)$~Gy per cc of overlap.  The growth is faster when the
+overlap is larger, since more shared tissue is affected by each additional
+Gy above $\dmin$.
+
+\paragraph{Mathematical form.}
+The penalty for delivering dose $d$ with overlap $o$ is:
+\begin{equation}
+  c(d,\, o)
+  = \begin{cases}
+      0 & d < \dmin, \\[4pt]
+      (d - \dmin)\,o
+      \;+\; \dfrac{(d-\dmin)^2}{2}\;\lvert\,\text{INTERCEPT} + \text{SLOPE}\cdot o\,\rvert
+      & d \geq \dmin.
+    \end{cases}
+  \label{eq:penalty}
+\end{equation}
+With the default constants (INTERCEPT~$= 0$, SLOPE~$= -0.65$):
+\begin{equation}
+  c(d,\, o) = (d - \dmin)\,o \;+\; \frac{(d-\dmin)^2}{2} \cdot 0.65\,o.
+  \label{eq:penalty_default}
+\end{equation}
+
+The penalty has two parts:
+\begin{itemize}
+  \item A \emph{linear} part $(d-\dmin)\cdot o$: every Gy above the minimum
+        incurs a cost proportional to the overlap.
+  \item A \emph{quadratic} part $\frac{(d-\dmin)^2}{2}\cdot 0.65\,o$: an
+        additional cost that grows faster than linearly, making large
+        excesses increasingly expensive.
+\end{itemize}
+When $o = 0$, both terms are zero: no OAR tissue, no cost.  When $o$ is
+large, even a small excess above $\dmin$ is costly.
+
+\subsubsection{\code{penalty_calc_single} --- penalty for one dose and one overlap}
+
+This function handles scalar inputs or small arrays.
+
+\paragraph{\code{np.where} --- element-wise conditional selection.}
+NumPy's \code{np.where(condition, x, y)} returns an array of the same shape
+as \code{condition}: wherever \code{condition} is \code{True} it takes the
+corresponding value from \code{x}; wherever it is \code{False} it takes
+from \code{y}.  For example, \code{np.where([True, False, True], [1,2,3],
+[10,20,30])} gives \code{[1,20,3]}.  It is the vectorised equivalent of
+writing \code{x if condition else y} element by element.
+
+The \code{np.where} at the end sets the penalty to zero wherever
+\code{physical_dose < min_dose}, implementing the piece-wise
+definition~\eqref{eq:penalty}.
+
+\begin{verbatim}
+def penalty_calc_single(physical_dose, min_dose, actual_volume,
+                        intercept=INTERCEPT, slope=SLOPE):
+    physical_dose = np.asarray(physical_dose)
+    min_dose = np.asarray(min_dose)
+    steepness = np.abs(intercept + slope * actual_volume)
+    penalty_added = (physical_dose - min_dose) * (actual_volume) \
+                  + (physical_dose - min_dose)**2 * steepness / 2
+    penalty_added = np.where(physical_dose < min_dose, 0, penalty_added)
+    if np.isscalar(penalty_added) or penalty_added.shape == ():
+        return float(penalty_added)
+    return penalty_added
+\end{verbatim}
+
+\subsubsection{\code{penalty_calc_matrix} --- penalty for all dose--volume combinations at once}
+
+Inside the DP loop, we need the penalty $c(d_k, o_j)$ for every combination
+of action $d_k$ and overlap $o_j$.  Computing these one at a time would be
+slow; \code{penalty_calc_matrix} vectorises the calculation using
+\code{np.outer}, which computes the outer product of two vectors.
+
+If \code{volume_space} has $J$ entries and \code{action_space} has $A$
+entries, \code{np.outer(volume_space, action_space - min_dose)} produces
+a $J \times A$ matrix whose $(j, k)$ entry is $o_j \cdot (d_k - \dmin)$.
+
+\begin{verbatim}
+def penalty_calc_matrix(delivered_doses, volume_space, min_dose,
+                        intercept=INTERCEPT, slope=SLOPE):
+    steepness = np.abs(intercept + slope * volume_space)
+    overlap_penalty_linear    = np.outer(volume_space,
+                                         (delivered_doses - min_dose))
+    overlap_penalty_quadratic = np.outer(steepness,
+                                         (delivered_doses - min_dose)**2) / 2
+    overlap_penalty = overlap_penalty_linear + overlap_penalty_quadratic
+    return overlap_penalty
+\end{verbatim}
+
+The result is a matrix of shape $(J, A)$ where entry $(j, k)$ is
+$c(d_k, o_j)$.  This is precomputed once per DP step and reused.
+
+%% ────────────────────────────────────────────────────────────
+\subsection{Inline feasibility clipping --- how much dose can we still deliver?}
+\label{sec:max_action}
+%% ────────────────────────────────────────────────────────────
+
+\paragraph{Purpose.}
+Given accumulated dose $D$ and goal $\Dgoal$, the highest dose we can
+deliver at this fraction without immediately overshooting the prescription
+is:
+\begin{equation}
+  d_{\max}^{\mathrm{feas}}(D) = \min\!\bigl(\dmax,\; \Dgoal - D\bigr).
+  \label{eq:maxfeas}
+\end{equation}
+
+This clipping is now performed inline inside \code{adaptive_fractionation_core}
+rather than by a separate helper function.  For the intermediate fraction case
+(Section~\ref{sec:bellman_actual_mid}), the largest feasible action index is
+computed as:
+
+\begin{verbatim}
+min_dose_reserved_for_future = (number_of_fractions - fraction_index_today) * min_dose
+max_allowed_action = np.minimum(action_space[-1],
+                                prescribed_dose - accumulated_dose
+                                - min_dose_reserved_for_future)
+max_action_index = np.abs(action_space - max_allowed_action).argmin()
+max_action_index = max(max_action_index, 1)
+feasible_actions = action_space[:max_action_index + 1]
+\end{verbatim}
+
+The guard \code{max_action_index = max(..., 1)} ensures that at least the minimum
+dose (\code{action_space[0]}) is always available even if arithmetic would
+otherwise exclude it.  \code{min_dose_reserved_for_future} is the dose budget
+that must be kept for all fractions \emph{after} the current one; subtracting it
+gives the tightest single-fraction ceiling.
+
+%% ────────────────────────────────────────────────────────────
+\subsection{\code{nearest_idx} --- snapping continuous values to a grid}
+\label{sec:nearest_idx}
+%% ────────────────────────────────────────────────────────────
+
+\paragraph{Purpose.}
+The DP's belief state $(\mu, \sigma)$ is continuous, but the value table
+only stores values at the finite grid points in \code{_MU_GRID} and
+\code{_SIGMA_GRID}.  After the Welford update produces continuous
+$\mu'$ and $\sigma'$, we must snap each to the nearest grid point.
+This function does that efficiently for large arrays.
+
+\begin{verbatim}
+def nearest_idx(values, grid):
+    flat = np.asarray(values).ravel()
+    hi = np.searchsorted(grid, flat, side='left').clip(1, len(grid) - 1)
+    lo = hi - 1
+    idx = np.where(flat - grid[lo] <= grid[hi] - flat, lo, hi)
+    return idx.reshape(np.asarray(values).shape)
+\end{verbatim}
+
+\paragraph{How it works.}
+\code{np.searchsorted(grid, v)} finds, for each query $v$, the index $h$
+such that \code{grid[h-1]} $\leq v <$ \code{grid[h]}.  The nearest grid
+point is therefore either \code{grid[h-1]} or \code{grid[h]}, whichever
+is closer.  The \code{np.where} picks the closer one.
+
+\paragraph{Why not use \code{np.argmin(np.abs(values - grid))}?}
+That approach has complexity $O(n \cdot K)$ where $n$ is the number of
+queries and $K$ is the grid size.  \code{searchsorted} uses binary search,
+giving $O(n \log K)$.  For the $K = 150$-point mu grid, this is roughly
+$20\times$ faster on large arrays --- a meaningful saving since this function
+is called millions of times during the DP.
+
+%% ────────────────────────────────────────────────────────────
+\subsection{\code{linear_interp} --- interpolating between grid points}
+%% ────────────────────────────────────────────────────────────
+
+\paragraph{Purpose.}
+When looking up a future value at accumulated dose $D + d$, the query dose
+may not fall exactly on a dose-grid point.  Linear interpolation estimates
+the value between the two nearest grid points.
+
+\begin{verbatim}
+def linear_interp(x_values, y_values, query_points):
+    query = np.asarray(query_points)
+    return np.interp(query.ravel(), x_values, y_values).reshape(query.shape)
+\end{verbatim}
+
+This is a thin wrapper around \code{numpy.interp} that handles queries of
+any shape.  \code{numpy.interp} does piecewise-linear interpolation: for a
+query $q$ between grid points $x_\ell$ and $x_h$, it returns
+$y_\ell + (q - x_\ell) \cdot (y_h - y_\ell) / (x_h - x_\ell)$.
+
+%% ────────────────────────────────────────────────────────────
+\subsection{\code{min_dose_to_deliver} --- minimum dose needed right now}
+%% ────────────────────────────────────────────────────────────
+
+\paragraph{Purpose.}
+Even if we could deliver any dose from $\dmin$ to $\dmax$, we must also
+ensure that the remaining fractions can still reach $\Dgoal$.  If we deliver
+too little now, the remaining fractions (even all at $\dmax$) may not make
+up the shortfall.  This function computes the minimum dose that must be
+delivered at the current fraction to keep the prescription reachable:
+
+\begin{equation}
+  d_{\min}^{\mathrm{feas}}(D, L) =
+  \max\!\Bigl(\dmin,\; \Dgoal - D - (L-1)\cdot\dmax \Bigr).
+  \label{eq:minfeas}
+\end{equation}
+
+Here $L$ is the number of fractions remaining (including the current one).
+The expression $\Dgoal - D - (L-1)\cdot\dmax$ is ``how much we need minus
+the maximum the remaining fractions can deliver'' --- if this is positive,
+we must deliver at least that much now.
+
+\begin{verbatim}
+def min_dose_to_deliver(accumulated_dose, fractions_left,
+                        prescribed_dose, min_dose, max_dose):
+    min_dose_to_deliver_calculated = (
+        (prescribed_dose - accumulated_dose)
+        - ((fractions_left - 1) * max_dose)
+    )
+    return (min_dose if min_dose_to_deliver_calculated < min_dose
+            else min_dose_to_deliver_calculated)
+\end{verbatim}
+
+This is used by \code{precompute_plan} (Section~\ref{sec:precompute}) to
+determine when the scanning loop can stop.
+
+\clearpage
+%% ============================================================
+\section{Belief-State Grids}
+\label{sec:grids}
+%% ============================================================
+
+The 5D extension's central innovation is carrying a belief $(\mu, \sigma)$ in the
+DP state.  To store values and policies for every possible belief,
+$\mu$ and $\sigma$ are discretised to finite grids.  This section describes
+those grids and explains every design choice.
+
+\begin{note}
+The specific grid values described in this section reflect the
+\emph{current implementation}, benchmarked on a cohort of 58 patients.
+They should be treated as a reasonable starting point, not a final
+optimised design.  Principled selection of grid resolution along all
+dimensions --- $\mu$, $\sigma$, and the overlap state space --- requires
+systematic numerical analysis (e.g.\ convergence studies and
+cross-validation on a larger patient population) to ensure the
+discretisation is neither too coarse (introducing approximation error)
+nor overfitted to the characteristics of the 58-patient cohort.  This
+work is ongoing.
+\end{note}
+
+\subsection{The mu grid \code{_MU_GRID}: covering all patients}
+
+The mu grid must span the full range of plausible patient mean overlaps.  A
+\emph{non-uniform} grid is used: fine resolution where most patients fall
+(small overlaps, $< 4$~cc) and coarser resolution for rare extreme cases:
+
+\begin{verbatim}
+_MU_GRID = np.unique(np.concatenate([
+    np.linspace(0.0,  1.0,  38),   # step ~0.027 cc  -- typical range
+    np.linspace(1.05, 4.0,  39),   # step ~0.078 cc
+    np.linspace(4.1,  10.0, 42),   # step ~0.144 cc
+    np.linspace(10.2, 16.0, 15),   # step ~0.414 cc
+    np.linspace(16.5, 30.0, 16),   # step ~0.900 cc  -- extreme patients
+]))  # 150 grid points total
+\end{verbatim}
+
+\begin{center}
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{Segment} & \textbf{Range (cc)} & \textbf{Points} & \textbf{Step (cc)} \\
+\hline
+1 & $[0.00, 1.00]$   & 38 & $\approx 0.027$ \\
+2 & $[1.05, 4.00]$   & 39 & $\approx 0.078$ \\
+3 & $[4.10, 10.00]$  & 42 & $\approx 0.144$ \\
+4 & $[10.20, 16.00]$ & 15 & $\approx 0.414$ \\
+5 & $[16.50, 30.00]$ & 16 & $\approx 0.900$ \\
+\hline
+\textbf{Total} & $[0, 30]$ & \textbf{150} & --- \\
+\hline
+\end{tabular}
+\end{center}
+
+\paragraph{Why non-uniform?}
+A coarse uniform grid (e.g.\ step 1.25~cc) would map a patient with true
+mean overlap $\mu = 0.37$~cc to the nearest grid point $\mu = 0$~cc.  Now
+consider what happens in the DP: a $\mathcal{N}(0, \sigma^2)$ distribution
+is centred at exactly zero.  Since \code{_VOLUME_SPACE} starts at 0~cc,
+every branch from this belief lands at the leftmost bin.  The DP sees all
+future overlaps as 0~cc and assigns zero penalty to everything ---
+completely wrong.  Fine resolution near 0~cc prevents this pathology.
+
+\paragraph{Why extend to 30~cc?}
+Patients with observed mean overlap $> 12$~cc exist in the 58-patient
+cohort.  If the grid ended at 12~cc, those patients' beliefs would clip to
+the last grid point, causing systematic underestimation of their overlap
+distribution and therefore overly aggressive dosing.
+
+\paragraph{Why 150 points total?}
+A sweep over $N_\mu$ from 50 to 500 (on the 58-patient cohort) shows that
+benefit quality saturates at approximately $N_\mu = 150$: above that, the
+improvement fluctuates within $\pm 0.005$~ccGy --- the level of
+quantisation noise rather than a genuine resolution benefit.  $N_\mu = 150$
+captures 99.95\% of the benefit achievable at $N_\mu = 500$ at $2.3\times$
+lower compute.  Earlier versions used $N_\mu = 280$; the reduction was made
+after this sweep.
+
+\subsection{The sigma grid \code{_SIGMA_GRID}: covering variability}
+
+The sigma grid spans the range of plausible per-patient overlap
+variabilities.  Each $\sigma$ value represents how consistently a
+patient's overlap volume remains from fraction to fraction: a small
+$\sigma$ means the overlap is nearly the same every day; a large $\sigma$
+means it fluctuates substantially.  A non-uniform grid is used, with
+denser coverage at low variabilities (where most patients fall) and
+sparser coverage at the high-variability tail:
+
+\begin{verbatim}
+_SIGMA_GRID = np.unique(np.concatenate([
+    np.linspace(0.05, 0.7, 5),    # step ~0.163 cc  -- most patients
+    np.linspace(0.8,  1.8, 3),    # step ~0.500 cc  -- upper range
+    np.linspace(2.0,  4.5, 3),    # step  1.250 cc  -- high variability tail
+]))  # 11 grid points total
+_SIGMA_MIN = float(_SIGMA_GRID[0])   # 0.05 cc -- hard floor on sigma
+\end{verbatim}
+
+The upper limit of 4.5~cc is set to avoid clipping the most variable patient in the
+58-patient ACTION cohort: patient~3 has MAP $\hat\sigma = 4.05$~cc across all observed
+fractions.  Extending the tail from the previous 3.5~cc to 4.5~cc required adding one
+point to the third segment (2 points $\to$ 3, giving the total 10 $\to$ 11).
+
+The floor $\sigmin = 0.05$~cc serves two purposes:
+\begin{enumerate}
+  \item It prevents division-by-zero in the Normal density calculation
+        (a distribution with $\sigma = 0$ is a point mass, not a proper
+        distribution).
+  \item It ensures that even a patient whose overlaps are very consistent
+        still has a non-degenerate predictive distribution, so the DP
+        continues to spread probability over multiple future branches.
+\end{enumerate}
+
+\subsection{The fixed overlap state space \code{_VOLUME_SPACE}}
+\label{sec:volumespace}
+
+This is the fixed, uniform grid of overlap volumes over which the DP
+operates.  Unlike the $\mu$ and $\sigma$ grids, it is shared by every
+patient and every fraction --- a single wide grid covering all
+clinically realistic overlap values.  Each of its $J$ bins represents
+one possible overlap volume outcome that the DP considers when imagining
+hypothetical future fractions.
+
+\begin{verbatim}
+_VOLUME_SPACE = np.linspace(0.0, 44.0, 441)
+\end{verbatim}
+
+This produces a 441-point uniform grid from 0~cc to 44~cc, with spacing exactly
+0.10~cc (matching TPS output resolution).  The upper bound is hardcoded rather than
+derived from \code{_SIGMA_GRID[-1]}, so that the bin width stays exactly 0.1~cc
+regardless of future $\sigma$ grid changes.  The value 44~cc comfortably covers
+$\mu_{\max} + 3\sigma_{\max} = 30 + 3 \times 4.5 = 43.5$~cc; the tail probability
+beyond 44~cc is negligible for any belief on the grid.
+
+\begin{keyidea}[Why a fixed wide grid is critical --- and what goes wrong without it]
+A tempting design choice is to use a patient-specific overlap grid (from
+\code{get_state_space}) as the DP's overlap state space.  This seems
+efficient: why model overlaps far from the patient's observed range?  But
+it causes a serious bug.
+
+Consider a patient on fraction~1 whose only observed overlap is 19.79~cc.
+The patient-specific grid spans roughly $[19.11, 20.47]$~cc --- a 1.36~cc
+window.
+
+The DP must now compute transition probabilities for \emph{every} belief
+grid point, including $\mu = 0.4$~cc.  A $\mathcal{N}(0.4, \sigma^2)$
+distribution has essentially all of its mass below 3~cc.  But the
+patient-specific grid starts at 19.11~cc.  The nearest available bin is
+19.11~cc.  So the DP assigns the entire probability mass of the
+$\mu = 0.4$~cc belief to the 19.11~cc bin --- and plans as if this patient
+will have 19.11~cc overlaps forever, regardless of belief.  The value
+function is completely corrupted for low-$\mu$ beliefs.
+
+The fixed wide \code{_VOLUME_SPACE} spanning $[0, 44]$~cc ensures that
+for any $(\mu, \sigma)$ on the belief grid, the branch probabilities are
+correctly distributed and sum to~1.  Using a patient-specific or
+belief-specific overlap range is explicitly prohibited for this reason.
+\end{keyidea}
+
+\subsection{Precomputed branch probabilities \code{_P_BELIEF}}
+\label{sec:pbelief}
+
+For every belief grid point $(\mu_i, \sigma_s)$ and every overlap bin $j$,
+we need the probability of landing in bin $j$.  This is exactly
+equation~\eqref{eq:probdist} applied to each $(\mu_i, \sigma_s)$ pair.
+Since the inputs (\code{_MU_GRID}, \code{_SIGMA_GRID},
+\code{_VOLUME_SPACE}) are all fixed constants, we precompute the full
+$(N_\mu \times N_\sigma \times J)$ array \emph{once at module import} and
+reuse it at every planning call.
+
+\paragraph{Tail handling.}
+\emph{Tail handling} is the process of ensuring that probability mass
+falling outside the finite bounds of \code{_VOLUME_SPACE} is not lost.
+Because the Normal distribution has infinite support, any belief $(\mu,
+\sigma)$ will in principle assign some probability to overlaps below
+\code{_VOLUME_SPACE[0]} (the left tail) and above
+\code{_VOLUME_SPACE[-1]} (the right tail).  Without correction, those
+out-of-bounds probabilities simply vanish, causing each row of
+\code{_P_BELIEF} to sum to less than~1.  The DP would then
+systematically underestimate future values for beliefs near the grid
+edges.
+
+The fix is to clamp: we assign the entire left-tail mass to the first bin
+(bin~0) and the entire right-tail mass to the last bin (bin $J-1$).
+Concretely, for beliefs with small $\mu$ (e.g.\ $\mu_0 = 0$~cc), most of
+the Normal distribution's mass falls below the grid --- it is all folded
+into bin~0.  Formally:
+\begin{align}
+  P_{i,s,0}   &\mathrel{+}=
+    \Phi\!\left(\frac{c_0 - h/2 - \mu_i}{\sigma_s}\right),
+  \label{eq:lefttail}\\
+  P_{i,s,J-1} &\mathrel{+}=
+    1 - \Phi\!\left(\frac{c_{J-1} + h/2 - \mu_i}{\sigma_s}\right).
+  \label{eq:righttail}
+\end{align}
+After this adjustment, every row sums to exactly~1.
+
+\begin{verbatim}
+def _precompute_branch_probabilities():
+    spacing = _VOLUME_SPACE[1] - _VOLUME_SPACE[0]
+    upper_bounds = _VOLUME_SPACE + spacing / 2   # upper edge of each bin
+    lower_bounds = _VOLUME_SPACE - spacing / 2   # lower edge of each bin
+    # Core bin probabilities using broadcasting over (N_mu, N_sigma, N_overlap)
+    probabilities = (
+        norm.cdf(upper_bounds[None, None, :],
+                  loc=_MU_GRID[:, None, None],
+                  scale=_SIGMA_GRID[None, :, None])
+      - norm.cdf(lower_bounds[None, None, :],
+                  loc=_MU_GRID[:, None, None],
+                  scale=_SIGMA_GRID[None, :, None])
+    )
+    # Add left-tail mass to bin 0
+    probabilities[:, :, 0]  += norm.cdf(lower_bounds[0],
+                              loc=_MU_GRID[:, None],
+                              scale=_SIGMA_GRID[None, :])
+    # Add right-tail mass to last bin
+    probabilities[:, :, -1] += 1.0 - norm.cdf(upper_bounds[-1],
+                                    loc=_MU_GRID[:, None],
+                                    scale=_SIGMA_GRID[None, :])
+    return probabilities
+
+_P_BELIEF = _precompute_branch_probabilities()
+# shape: (N_mu, N_sigma, N_overlap), computed once at module load
+\end{verbatim}
+
+\paragraph{Reading the broadcasting.}
+\code{upper_bounds[None, None, :]} has shape $(1, 1, J)$,
+\code{_MU_GRID[:, None, None]} has shape $(N_\mu, 1, 1)$, and
+\code{_SIGMA_GRID[None, :, None]} has shape $(1, N_\sigma, 1)$.
+NumPy broadcasts these to $(N_\mu, N_\sigma, J)$, computing
+all $150 \times 11 \times 441 = 727{,}650$ probabilities in one call.
+
+\code{_P_BELIEF} uses approximately
+$150 \times 11 \times 441 \times 8 \approx 6$~MB of memory and is computed
+once at module load time.
+
+\clearpage
+%% ============================================================
+\section{Belief Update: Welford Running Moments}
+\label{sec:welford}
+%% ============================================================
+
+When the DP imagines a hypothetical next overlap $o'$, it must update the
+current belief $(\mu, \sigma)$ to reflect what the running estimate would
+look like after observing $o'$.  This is the Welford update introduced in
+Section~\ref{sec:welford_intro}, now written out precisely.
+
+\subsection{The update equations}
+
+Suppose before fraction $t$ we have $n_t$ observations with running mean
+$\mu_t$ and running population variance $\sigma_t^2$.  Observing (or
+hypothetically observing) $o'$ gives:
+\begin{align}
+  \mu' &= \frac{n_t\,\mu_t + o'}{n_t + 1},
+  \label{eq:welford_mu}\\[4pt]
+  (\sigma')^2 &= \frac{n_t\,\sigma_t^2 + (o'-\mu_t)(o'-\mu')}{n_t+1}.
+  \label{eq:welford_sigma}
+\end{align}
+
+The update count $n_t$ equals the fraction index: at fraction $f$,
+$n_t = f$.  Inside the DP, for each hypothetical future fraction, the
+loop variable \code{observation_count} is set to \code{fraction_number} --- the
+absolute fraction index being modelled.  This represents the total
+expected count of observations at that hypothetical step of the backward
+pass (real observations already made plus hypothetical observations
+accumulated along the branch being explored), \emph{not} solely a count
+of real-world observations.  For example, when planning at fraction~2
+and modelling fraction~4 hypothetically, \code{observation_count = 4}: as if four
+treatment-fraction observations have been accumulated along that branch.
+
+\paragraph{Why is $n_t = f$ rather than $f+1$, even though \code{volumes}
+has $f+1$ elements?}
+The planning scan $o_0$ is \emph{not} counted in $n_t$.  The count tracks
+treatment-fraction observations only ($o_1, \ldots, o_f$).  The planning
+scan is included in \code{volumes} and therefore in \code{initial_belief_mu} and
+\code{initial_belief_sigma}---it informs the initial belief---but it does not
+contribute a count to the Welford denominator.  The reason is that $o_0$
+is acquired before treatment begins, potentially under different imaging
+and positioning conditions than the daily treatment fractions.  Assigning
+it a full count would over-weight that single pre-treatment measurement in
+the running estimate of precision.  Instead, $o_0$ seeds the belief value
+of $\mu$; subsequent treatment fractions drive the count.
+
+Concretely, at fraction~2 with \code{volumes} $= [o_0, o_1, o_2]$:
+\begin{center}
+\begin{tabular}{ll}
+  \code{initial_belief_mu} & $= (o_0 + o_1 + o_2)/3$ (all three values) \\
+  \code{observation_count} for DP at fraction~2 & $= 2$ (treatment fractions only) \\
+  \code{observation_count} for DP at hypothetical fraction~3 & $= 3$ \\
+  \code{observation_count} for DP at hypothetical fraction~4 & $= 4$ \\
+\end{tabular}
+\end{center}
+The Welford update at fraction~3 is therefore
+$\mu' = (2\,\mu_\mathrm{start} + o')/3$, treating \code{initial_belief_mu} as
+the result of two treatment-fraction observations.  The information
+from $o_0$ is already encoded in \code{initial_belief_mu}'s value and is not
+double-counted.
+
+\subsection{Grid projection after the update}
+
+After computing continuous $\mu'$ and $\sigma'$, the values are clipped to
+the grid bounds and snapped to the nearest grid point.  This is handled by
+\code{_hypothetical_belief_grid_indices} (scalar path) and the inline vectorised block
+inside \code{_bellman_expectation_full_grid} (full belief-grid path), both
+in \code{belief_model.py}:
+
+\begin{enumerate}
+  \item Clip $\mu'$ to $[\mu_{\min}, \mu_{\max}] = [0, 30]$~cc, then find
+        the nearest index in \code{_MU_GRID}.
+  \item Clip $\sigma'$ to $[\sigmin, \sigma_{\max}] = [0.05, 4.5]$~cc
+        (enforcing the positive floor), then find the nearest index in
+        \code{_SIGMA_GRID}.
+\end{enumerate}
+
+The resulting pair of integers $(i', s')$ is the quantised updated belief.
+
+\subsection{Scalar belief update: \code{_hypothetical_belief_grid_indices}}
+
+This function, in \code{belief_model.py}, performs the Welford update for a \emph{single} starting belief
+$(\mu, \sigma)$ over all $J$ overlap branches simultaneously.
+\code{volume_space} is an array of length $J$ playing the role of $o'$,
+so all $J$ updates are computed in parallel using NumPy vectorisation:
+
+\begin{verbatim}
+def _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count):
+    """For each hypothetical next overlap in volume_space, compute where the updated
+    belief (mu, sigma) would land on the (_MU_GRID, _SIGMA_GRID) grid.
+
+    Returns next_mi, next_si: (N_overlap,) integer index arrays into _MU_GRID and
+    _SIGMA_GRID, used to look up future values in the DP values array.
+    Uses Welford's online algorithm to update the running mean and variance.
+    """
+    mu_prime = (observation_count * mu + volume_space) / (observation_count + 1)
+    sigma2_prime = (observation_count * sigma ** 2
+                    + (volume_space - mu) * (volume_space - mu_prime)) / (observation_count + 1)
+    sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))
+    mu_prime    = np.clip(mu_prime,    _MU_GRID[0],    _MU_GRID[-1])
+    sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])
+    next_mu_index    = nearest_idx(mu_prime,    _MU_GRID)
+    next_sigma_index = nearest_idx(sigma_prime, _SIGMA_GRID)
+    return next_mu_index, next_sigma_index
+\end{verbatim}
+
+The result is two integer arrays \code{next_mu_index} and \code{next_sigma_index}, each
+of length $J$.  Element $j$ of each array gives the belief grid index after
+hypothetically observing branch $j$.
+
+\subsection{Expected future value for a scalar belief: \code{_bellman_expectation}}
+\label{sec:bellman_expectation_scalar}
+
+This function is in \code{belief_model.py}.
+
+\paragraph{What we want.}
+For a fixed starting belief $(\mu, \sigma)$ and a fixed accumulated dose
+state $D$, we want the expected future value:
+\begin{equation}
+  E[V \mid D, \mu, \sigma]
+  = \sum_{j=0}^{J-1} p_j^{(\mu,\sigma)}\;
+    V_{\mathrm{next}}\!\left[D,\; j,\; \code{next_mu_index}[j],\; \code{next_sigma_index}[j]\right],
+  \label{eq:future_value_1d}
+\end{equation}
+where $p_j^{(\mu,\sigma)}$ is the probability of branch $j$ given the current
+belief (a 1-D slice from \code{current_overlap_probs}), and
+$V_{\mathrm{next}}[D, j, i', s']$ is the value stored in the
+previously-computed table at dose state $D$, overlap branch $j$, and updated
+belief $(i', s')$.
+
+\paragraph{Why fancy indexing is needed, and what \code{np.arange} does here.}
+Each branch $j$ points to a \emph{different} belief index pair
+$(\code{next_mu_index}[j], \code{next_sigma_index}[j])$.  A plain slice like
+\code{values_prev[:, :, i', s']} would fix a single belief --- not what
+we want.
+
+The expression \code{values_prev[:, np.arange(J), next_mu_index, next_sigma_index]}
+uses advanced indexing across four axes simultaneously.
+\code{np.arange(J)} generates $[0, 1, 2, \ldots, J-1]$ --- it is used to
+\emph{pair each branch $j$ with itself} in the overlap axis, so that
+index $j$ in the overlap dimension always lines up with index $j$ in
+\code{next_mu_index} and \code{next_sigma_index}.  Without \code{np.arange(J)}, NumPy
+would not know which overlap bin to pair with which belief index.  The
+result is: for each $j$, take \code{values_prev[:, j, next_mu_index[j],
+next_sigma_index[j]]} --- a different belief position for each branch.
+
+\begin{verbatim}
+def _bellman_expectation(values_prev, volume_space, p_branch, mu, sigma, observation_count):
+    """Bellman expectation over all hypothetical next overlaps for a single belief (mu, sigma).
+
+    Sums future values weighted by branch probabilities:
+        sum_j p_branch[j] * values_prev[d, j, next_mi[j], next_si[j]]
+
+    values_prev: (N_dose, N_overlap, N_mu, N_sigma)
+    p_branch:    (N_overlap,) probability of each next overlap under current belief
+    Returns:     (N_dose,) expected future value for each accumulated dose state
+    """
+    next_mi, next_si = _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count)
+    branch_vals = values_prev[
+        :, np.arange(len(volume_space)), next_mi, next_si
+    ]  # shape: (N_dose, N_overlap)
+    return (branch_vals * p_branch[None, :]).sum(axis=1)
+\end{verbatim}
+
+After gathering, \code{branch_vals} has shape $(N_D, J)$: for each dose
+state $D$ and each branch $j$, the value at the updated belief.  Multiplying
+by \code{p_branch[None, :]} (broadcast to $(N_D, J)$) and summing over $j$
+gives the expected value as a $(N_D,)$ vector.
+
+This scalar version is used only for the actual fraction's decision, where
+$(\mathrm{\code{initial_belief_mu}}, \mathrm{\code{initial_belief_sigma}})$
+is a single point and \code{observation_count} is the current fraction index.
+Hypothetical future fractions use the fully vectorised version described in
+Section~\ref{sec:bellman_intermediate}.
+
+\clearpage
+%% ============================================================
+\section{The Bellman Recursion: \code{adaptive_fractionation_core}}
+\label{sec:bellman}
+%% ============================================================
+
+This function is the heart of the algorithm.  It takes the current treatment
+state and returns the optimal dose and supporting value/policy tables.
+
+\subsection{Two key arrays: \code{dose_space} and \code{action_space}}
+\label{sec:two_arrays}
+
+Two arrays with similar names appear throughout the solver and are easy to
+confuse.  It is worth defining them clearly before anything else.
+
+\begin{description}
+  \item[\code{dose_space}] is the grid of possible \emph{accumulated}
+        dose values $D$ --- the total Gy already delivered to the tumour at
+        the start of a fraction.  It runs from the smallest reachable
+        accumulated dose up to $\Dgoal$, plus one extra sentinel value
+        $\Dgoal + 0.05$ (see below).  The first axis of the value table
+        \code{values} is indexed by \code{dose_space}.
+
+  \item[\code{action_space}] is the grid of possible \emph{actions}
+        --- the doses the algorithm can choose to deliver in a single
+        fraction.  It runs from $\dmin$ to $\dmax$ in steps of $\delta_d$.
+        With defaults this is a 9-point grid from 6.0~Gy to 10.0~Gy in
+        0.5~Gy steps.
+\end{description}
+
+In the code:
+
+\begin{verbatim}
+dose_space = np.arange(min_accumulated_dose_after_fraction, prescribed_dose, dose_steps)
+overdose_sentinel = prescribed_dose + 0.05
+dose_space = np.concatenate((dose_space, [prescribed_dose, overdose_sentinel]))
+
+action_space = np.arange(min_dose, max_dose + 0.01, dose_steps)
+\end{verbatim}
+
+\paragraph{The \code{overdose_sentinel}.}
+\code{overdose_sentinel = prescribed_dose + 0.05} is a \emph{sentinel value}: a deliberately
+out-of-range number used to mark overdose states.  It is never a real
+accumulated dose; it is appended to \code{dose_space} so that any action
+which would push the total above $\Dgoal$ maps to this special entry.
+The terminal case assigns a $-10^{12}$ penalty to it, so the optimiser
+always avoids it.  The value $+0.05$ is chosen to be small enough not to
+interfere with real doses but large enough to be distinguishable from
+$\Dgoal$ after floating-point arithmetic.  Concretely, it must satisfy
+two constraints: (1) it must be less than half a dose step
+($\delta_d / 2 = 0.25$~Gy) so it cannot be confused with a legitimate
+accumulated dose; and (2) it must exceed the floating-point rounding
+error on $\Dgoal$ (of order $10^{-14}$~Gy for the 40~Gy default).
+The value $0.05$~Gy satisfies both with wide margins and is otherwise
+arbitrary within this safe range.
+
+\subsection{State representation and array layout}
+
+The DP value table \code{values} has shape
+$(n_s, N_D, J, N_\mu, N_\sigma)$, where:
+\begin{itemize}
+  \item $n_s = F - f$: number of future fractions (depth of the backward pass);
+  \item $N_D$: number of accumulated-dose grid points;
+  \item $J = 441$: number of overlap grid points;
+  \item $N_\mu = 150$, $N_\sigma = 11$: belief grid sizes.
+\end{itemize}
+So \code{values[k, d, j, i, s]} is the optimal expected value from fraction
+$(F - k)$ onwards for dose index $d$, overlap index $j$, and belief-grid
+indices $(i, s)$.  Concretely, these correspond to accumulated dose
+\code{dose_space[d]}, overlap \code{_VOLUME_SPACE[j]}, and belief
+$(\code{_MU_GRID}[i], \code{_SIGMA_GRID}[s])$.
+
+\begin{note}
+The backward-pass loop (\code{_build_dp_context}) runs for $n_s$
+iterations ($i=0$ through $i=n_s-1$), covering only future fractions
+$f+1$ through $F$.  It writes into \code{values[0]} through
+\code{values[n_s-1]}.  The actual current fraction~$f$ is resolved
+separately by \code{_resolve_current_fraction}, which reads
+\code{values[-1]} (the table for fraction~$f+1$) and performs a single
+Bellman step at the true starting belief to produce \code{recommended_dose}.
+\end{note}
+
+The axis ordering \code{[k, d, j, i, s]} places the belief dimensions
+($i$, $s$) at the end of the value table, where NumPy's row-major layout
+makes them most cache-friendly for the inner-loop fancy indexing in
+Step~3 of Section~\ref{sec:bellman_intermediate}.  Note that the action
+dimension does not appear in the value table at all; it is exposed by
+transposing a separate buffer \code{future_values_masked_action_last} before
+the Numba kernel call in Step~5 (see that section for details).
+
+\subsection{Action set}
+
+The set of doses the algorithm can choose at fraction $t$ is:
+\begin{equation}
+  \mathcal{A}(D) = \bigl\{\dmin,\; \dmin+\delta_d,\; \ldots,\; \dmax\bigr\}
+                    \cap \bigl\{d : d \leq \Dgoal - D\bigr\}.
+  \label{eq:actionset}
+\end{equation}
+The constraint $d \leq \Dgoal - D$ prevents immediate overdose.
+Discretised in the code:
+\begin{verbatim}
+action_space = np.arange(min_dose, max_dose + 0.01, dose_steps)
+\end{verbatim}
+With defaults this gives 9 actions: 6.0, 6.5, 7.0, \ldots, 10.0~Gy.
+
+\subsection{Hard feasibility guards}
+\label{sec:feasibility}
+
+Before entering the DP loop, two checks determine whether the prescription is
+even achievable.  If there are $L = F - f + 1$ fractions remaining:
+\begin{itemize}
+  \item If $\Dgoal - D < L \cdot \dmin$: even delivering $\dmin$ every
+        remaining fraction gives less than $\Dgoal$.  Prescription is
+        impossible; return $\dmin$ as the forced action.
+  \item If $\Dgoal - D > L \cdot \dmax$: even delivering $\dmax$ every
+        remaining fraction falls short of $\Dgoal$.  Prescription is
+        impossible; return $\dmax$.
+\end{itemize}
+
+\begin{verbatim}
+if remaining_ptv_dose < remaining_fractions * min_dose:
+    recommended_dose = min_dose
+    ...
+elif remaining_ptv_dose > remaining_fractions * max_dose:
+    recommended_dose = max_dose
+    ...
+\end{verbatim}
+
+In both cases, all value table entries are set to $-10^{12}$ to signal that
+no valid DP solution exists.
+
+\subsection{Initialisation from observed data}
+
+\begin{verbatim}
+# In _resolve_current_fraction (core_adaptfx.py):
+all_volumes = np.append(prior_volumes, observed_overlap)
+initial_belief_mu    = all_volumes.mean()
+initial_belief_sigma = std_calc(all_volumes, alpha, beta)
+current_overlap_probs = current_belief_probdist(initial_belief_mu, initial_belief_sigma)
+\end{verbatim}
+
+\code{observed_overlap} is the overlap measured for the current fraction $f$,
+extracted by the caller as \code{volumes[-1]}.  It is the true value the algorithm
+must act on; it is used later when computing the actual penalty
+\code{penalty_calc_single(..., observed_overlap)} and when determining the
+specific recommended dose.
+
+$\mathrm{\code{initial_belief_mu}}$ is the sample mean of all $f$ observed overlaps
+(including the planning scan).  $\mathrm{\code{initial_belief_sigma}}$ is the MAP
+estimate from Section~\ref{sec:std_calc}.  \code{current_overlap_probs} is the
+probability vector over the 441-point overlap grid under
+$\mathcal{N}(\mathrm{\code{initial_belief_mu}}, \mathrm{\code{initial_belief_sigma}}^2)$,
+computed by \code{current_belief_probdist} (in \code{belief_model.py}), which
+wraps \code{probdist} without tail-folding.
+
+\paragraph{Code organisation note.}
+The solver is split into two functions: \code{_build_dp_context} runs the
+backward DP sweep over all \emph{future} fractions (Cases~1 and~2 below) and
+returns a reusable context dict; \code{_resolve_current_fraction} consumes
+that context to determine the dose for the \emph{actual} current fraction
+(Cases~3--5 below).  This split was introduced so that \code{precompute_plan}
+can call \code{_build_dp_context} \emph{once} and then call
+\code{_resolve_current_fraction} cheaply for each candidate overlap value,
+instead of rebuilding the full DP table from scratch for every candidate.
+
+\subsection{The DP backward-pass loop}
+
+The loop runs from \code{i=0} (last fraction, $F$) to
+\code{i=remaining_fractions - 1} (the current fraction $f$), filling
+\code{values[i]} at each step using \code{values[i-1]} (which was
+just computed):
+
+\begin{verbatim}
+for i, fraction_number in enumerate(
+        np.arange(number_of_fractions, fraction_index_today - 1, -1)):
+    observation_count = int(fraction_number)
+    ...
+\end{verbatim}
+
+\code{np.arange(F, f-1, -1)} generates $[F, F-1, \ldots, f]$ where $f$ is
+\code{fraction_index_today}.
+\code{enumerate(...)} pairs each element with a counter starting from~0,
+so \code{i} counts up from~0 while \code{fraction_number} counts
+down from $F$ to \code{fraction_index_today} in lockstep.
+
+The cast \code{observation_count = int(fraction_number)} converts the numpy integer
+(\code{int64} dtype, since \code{np.arange} receives integer arguments)
+into a plain Python integer.  The arithmetic expressions that follow work
+either way, but the explicit cast makes the intent clear: \code{observation_count} is
+always a whole-number observation count.
+
+The backward-pass loop (in \code{_build_dp_context}) covers only the
+\emph{future} fractions $f+1$ through $F$; the actual current fraction~$f$
+is handled by \code{_resolve_current_fraction} afterwards.  Within the
+backward loop there are two cases:
+
+\begin{center}
+\begin{tabular}{|l|l|l|l|}
+\hline
+\textbf{Code condition} & \textbf{i} & \textbf{Role} & \textbf{Ex: F=5, f=2} \\
+\hline
+\code{i == 0}    & $0$         & Terminal fraction ($F$)       & $i=0$ (fraction~5) \\
+\code{i $>$ 0}   & $1\ldots n_s-1$ & Hypothetical fractions    & $i=1$ (frac 4), $i=2$ (frac 3) \\
+\hline
+\end{tabular}
+\end{center}
+
+After the backward-pass loop, \code{_resolve_current_fraction} handles the
+current fraction~$f$ itself (Cases~3--5 below).
+
+\begin{example}[Five-fraction treatment, planning at fraction~2]
+$F=5$, $f=2$.  The backward sweep ($n_s - 1 = 2$ future hypothetical
+fractions) produces:
+\begin{center}
+\begin{tabular}{|c|c|l|}
+\hline
+\textbf{i} & \textbf{\code{fraction_number}} & \textbf{Role} \\
+\hline
+0 & 5 & Terminal: forces $d_5 = \Dgoal - D$ \\
+1 & 4 & Hypothetical fraction~4: full DP update \\
+2 & 3 & Hypothetical fraction~3: full DP update \\
+\hline
+\end{tabular}
+\end{center}
+Then \code{_resolve_current_fraction} runs the actual-fraction step
+for $f=2$, producing \code{recommended_dose} for fraction~2 given the
+three observed overlaps $o_0, o_1, o_2$.
+\end{example}
+
+\subsection{Case 1: Terminal fraction (\code{i == 0})}
+\label{sec:bellman_terminal}
+
+At the last fraction there is no more future to plan for.  The action is
+uniquely determined: deliver exactly the remaining dose $\Dgoal - D$,
+clamped to $[\dmin, \dmax]$.  The terminal value is the negative penalty of
+this forced action, with a hard $-10^{12}$ sentinel if rounding means the
+total ends up above or below $\Dgoal$.
+
+\paragraph{Why clamp to $[\dmin, \dmax]$?}
+If $\Dgoal - D$ falls outside the clinically allowed range, the prescription
+cannot be met exactly.  The clamp returns the closest feasible dose; the
+sentinels then record the infeasibility.
+
+\begin{verbatim}
+# --- Terminal fraction (i == 0): no choice — deliver exactly the remaining dose ---
+best_actions = np.clip(prescribed_dose - dose_space, min_dose, max_dose)
+future_accumulated_dose = dose_space + best_actions
+
+terminal_oar_penalty = penalty_calc_single(best_actions[:, None], min_dose, _VOLUME_SPACE[None, :])
+# shape: (N_dose, N_overlap)
+
+underdose_penalty = np.zeros(future_accumulated_dose.shape)
+overdose_penalty  = np.zeros(future_accumulated_dose.shape)
+underdose_penalty[np.round(future_accumulated_dose, 2) < prescribed_dose] = -1e12
+overdose_penalty[np.round(future_accumulated_dose, 2) > prescribed_dose]  = -1e12
+
+terminal_state_value = (-terminal_oar_penalty + underdose_penalty[:, None] + overdose_penalty[:, None])
+values[i]   = terminal_state_value[:, :, None, None]
+policies[i] = best_actions[:, None, None, None] * np.ones((N_dose, N_overlap, N_mu, N_sigma))
+\end{verbatim}
+
+\paragraph{Why rounding?}
+Floating-point arithmetic on dose steps (e.g.\ $0.5 \times 5$) can leave
+the total slightly above or below 40 due to machine epsilon.  Rounding to
+2 decimal places suppresses this noise.
+
+\paragraph{Why is the terminal value belief-independent?}
+The action at the last fraction is forced --- deliver exactly what is
+remaining --- regardless of what the running belief $(\mu, \sigma)$ says.
+So the value and policy do not vary with the belief.  Broadcasting
+\code{terminal_state_value[:, :, None, None]} expands the $(N_D, J)$ array over
+the belief dimensions without copying data.
+
+Note that \code{np.clip(prescribed_dose - dose_space, min_dose, max_dose)}
+performs the clamping directly, replacing the earlier multi-step
+if-statement approach.
+
+\subsection{Case 2: Hypothetical future fractions (\code{i $>$ 0})}
+\label{sec:bellman_intermediate}
+
+This case fills \code{values[i]} for \emph{every} combination of
+$(D, o, \mu, \sigma)$ at hypothetical future fraction \code{fraction_number}.
+It is the most computationally intensive path, executed for
+$n_s - 1$ fractions.
+
+The computation is now split across two functions called from within the loop.
+
+\subsubsection*{Steps 1+3 combined: Bellman expectation over the full belief grid}
+
+The expected future value for every (accumulated-dose, belief) combination is
+computed by \code{_bellman_expectation_full_grid} from
+\code{belief_model.py}:
+
+\begin{verbatim}
+future_value_prob_full = _bellman_expectation_full_grid(values[i - 1], observation_count)
+# shape: (N_dose, N_mu, N_sigma)
+\end{verbatim}
+
+Internally this function:
+\begin{enumerate}
+  \item Applies the Welford update vectorised over all
+        $(N_\mu \times N_\sigma \times J)$ triples to obtain
+        \code{next_mi} and \code{next_si} (belief grid indices after each
+        hypothetical observation) --- exactly the computation described in
+        Section~\ref{sec:broadcasting_intro}.
+  \item Flattens the belief index: $b' = i' \cdot N_\sigma + s'$, reshapes
+        \code{values[i-1]} to \code{vals_flat} of shape $(N_D, J, N_\mu N_\sigma)$.
+  \item Accumulates the probability-weighted sum in a $j$-loop (one slice at a time)
+        to avoid materialising the full $(N_D, N_\mu, N_\sigma, J)$ intermediate:
+        \begin{verbatim}
+for j in range(N_overlap):
+    future_value_prob_full += (
+        vals_flat[:, j, :][:, next_b[:, :, j]]  # (N_dose, N_mu, N_sigma)
+        * _P_BELIEF[None, :, :, j]               # (1, N_mu, N_sigma)
+    )
+        \end{verbatim}
+\end{enumerate}
+
+\subsubsection*{Step 4: Look up future values at action-induced doses}
+
+Because \code{action_space} and \code{dose_space} are constructed with the
+same step size and starting alignment, every future accumulated dose
+$D_d + a_k$ lands \emph{exactly} on a \code{dose_space} grid point.
+The code verifies this alignment via an assertion and then uses a direct
+\code{searchsorted} lookup (no interpolation required):
+
+\begin{verbatim}
+future_doses = dose_space[:, None] + action_space[None, :]
+query_doses  = future_doses.ravel()
+dose_indices = np.clip(
+    np.searchsorted(dose_space, np.round(query_doses, decimals=10), side='left'),
+    0, N_dose - 1
+)
+future_values_full = future_value_prob_full[dose_indices].reshape(
+    N_dose, len(action_space), N_mu, N_sigma
+)
+# shape: (N_dose, N_action, N_mu, N_sigma)
+\end{verbatim}
+
+The \code{np.round(..., decimals=10)} suppresses sub-epsilon floating-point
+drift from \code{np.arange} before the \code{searchsorted} call.  After
+this step, \code{future_values_full[d, a, i, s]} is the expected future
+value after being in dose state $d$, taking action $a$, and holding belief
+$(i, s)$.
+
+\subsubsection*{Valid actions mask}
+
+Before the argmax step, a valid-actions mask is computed to prevent
+overshooting the prescription:
+
+\begin{verbatim}
+min_dose_reserved_for_future = (number_of_fractions - fraction_number) * min_dose
+max_allowed_actions = np.minimum(action_space[-1],
+    prescribed_dose - dose_space - min_dose_reserved_for_future)
+max_action_indices = np.abs(action_space[None, :] - max_allowed_actions[:, None]).argmin(axis=1)
+max_action_indices = np.where(max_action_indices == 0, 1, max_action_indices)
+valid_actions = (np.arange(action_space.size)[None, :] <= max_action_indices[:, None])
+# shape: (N_dose, N_action)
+\end{verbatim}
+
+Invalid actions (those that would overshoot $\Dgoal$ from some dose states)
+are masked to \code{min_float} so \code{argmax} never selects them.
+
+\subsubsection*{Step 5: Value and policy update via Numba kernel}
+
+The Bellman equation for this step is:
+\begin{equation}
+  V(d, j, i, s)
+  = \max_{a \in \mathcal{A}(d)}\!
+    \bigl[
+      -c(a, o_j)
+      + \code{future_values_full}[d, a, i, s]
+    \bigr].
+  \label{eq:bellman_step5}
+\end{equation}
+
+The masking and argmax are handled by the Numba-JIT kernel
+\code{_fill_values_policies} in \code{core_adaptfx.py}.  Before
+calling it, the code prepares inputs:
+
+\begin{verbatim}
+future_values_masked = np.where(
+    valid_actions[:, :, None, None], future_values_full, min_float
+)
+# Transpose so action axis is last for cache-friendly argmax:
+future_values_masked_action_last = future_values_masked.transpose(0, 2, 3, 1).copy()
+# shape: (N_dose, N_mu, N_sigma, N_action), contiguous
+\end{verbatim}
+
+\code{np.finfo(np.float64).min} (\code{min_float}) is the most negative
+finite 64-bit float ($\approx -1.8 \times 10^{308}$).  It is used instead
+of \code{-np.inf} because \code{argmax} can return \code{nan} in edge cases
+when \code{-np.inf} is present.
+
+A flat-index base is precomputed to allow the Numba kernel to gather the
+winning value without \code{take_along_axis} (which allocates a temporary):
+
+\begin{verbatim}
+flat_index_base = (
+    np.arange(N_dose)[:, None, None] * N_mu * N_sigma
+    + np.arange(N_mu)[None, :, None] * N_sigma
+    + np.arange(N_sigma)[None, None, :]
+) * len(action_space)
+# shape: (N_dose, N_mu, N_sigma)
+\end{verbatim}
+
+The kernel then iterates over all $J = 441$ overlap bins in parallel
+(via \code{prange}), subtracting the per-overlap penalty from
+\code{future_values_masked_action_last} and recording the best
+action and value:
+
+\begin{verbatim}
+_fill_values_policies(
+    future_values_masked_action_last, overlap_penalty,
+    flat_index_base, action_space, values_state, policies_state
+)
+values[i]   = values_state
+policies[i] = policies_state
+\end{verbatim}
+
+\paragraph{Why Numba?}
+The $j$-loop over 441 overlap bins is the performance bottleneck.
+Parallelising it with \code{prange} (Numba's parallel range) gives
+a roughly $N_{\text{cores}}$-fold speedup.  The kernel subtracts
+\code{overlap_penalty[j]} from the entire $(N_D, N_\mu, N_\sigma, N_a)$
+buffer, finds the argmax, and gathers the winning value using the
+precomputed flat index --- all without heap allocation inside the loop.
+
+\paragraph{\code{flat_index_base} --- row-major index arithmetic.}
+NumPy stores multi-dimensional arrays in row-major (C) order: the last
+axis varies fastest in memory.  For a 4-D array of shape
+$(N_D, N_\mu, N_\sigma, N_a)$, the element at position $(d, i, s, a)$
+sits at flat memory offset:
+\[
+  \text{flat} = d \cdot N_\mu N_\sigma N_a
+              + i \cdot N_\sigma N_a
+              + s \cdot N_a
+              + a.
+\]
+\code{flat_index_base[d, i, s]} precomputes the first three terms
+$(d \cdot N_\mu N_\sigma + i \cdot N_\sigma + s) \cdot N_a$
+for every $(d, i, s)$ triple, broadcast together via the three
+\code{[:, None, None]} / \code{[None, :, None]} / \code{[None, None, :]}
+shapes (Section~\ref{sec:broadcasting_intro}).  Adding the best action index
+from \code{argmax} gives the exact flat offset of the winning value ---
+no temporary array created.
+
+\subsection{Case 3: Actual fraction --- first fraction ($f = 1$)}
+\label{sec:bellman_actual_f1}
+
+When planning fraction~1, all future fractions have been filled as
+hypothetical (Case~2), and we now compute the recommendation for the actual
+fraction.  Since $f = 1$, there is no accumulated dose ($D_1 = 0$), so the
+dose-space axis is free.  This case is reached when
+\code{fraction_index_today == 1}.
+
+The key difference from Case~2 is that we use a \emph{single} starting
+belief $(\mathrm{\code{initial_belief_mu}}, \mathrm{\code{initial_belief_sigma}})$ ---
+the initial belief from real observations --- rather than computing over
+the full belief grid.  We call \code{_bellman_expectation} which handles
+the scalar case:
+
+\begin{verbatim}
+# fraction_index_today == 1: actual first fraction (in _resolve_current_fraction)
+immediate_cost = penalty_calc_single(action_space, min_dose, observed_overlap)
+
+future_value_prob = _bellman_expectation(
+    values[-1], _VOLUME_SPACE, current_overlap_probs,
+    initial_belief_mu, initial_belief_sigma, observation_count
+)
+# Direct lookup: action_space and dose_space are perfectly aligned at fraction 1
+action_dose_indices = np.clip(
+    np.searchsorted(dose_space, np.round(action_space, decimals=10), side='left'),
+    0, N_dose - 1
+)
+future_values = future_value_prob[action_dose_indices]
+
+state_values_full_grid = -overlap_penalty + future_values
+current_fraction_policy = action_space[state_values_full_grid.argmax(axis=1)]
+
+actual_value   = -immediate_cost + future_values
+recommended_dose = action_space[actual_value.argmax()]
+\end{verbatim}
+
+\code{state_values_full_grid} has shape $(J, N_a)$: for each possible
+overlap $j$ and each action $a$, the total value (immediate reward plus
+expected future).  \code{current_fraction_policy[j]} is the best action given
+overlap $j$ (the full policy curve for this fraction).
+\code{recommended_dose} is the recommendation for the \emph{observed} overlap
+\code{observed_overlap}.
+
+At fraction~1, \code{action_space} and \code{dose_space} are built with
+the same step size starting from the same minimum, so every action $a_k$
+corresponds exactly to a dose-space grid point.  A direct \code{searchsorted}
+lookup (no interpolation) is therefore correct here.
+
+\subsection{Case 4: Actual fraction --- intermediate ($f < F$, $f > 1$)}
+\label{sec:bellman_actual_mid}
+
+For fractions other than the first, the accumulated dose $D_f > 0$, which
+restricts the action set further.  Feasibility clipping is now performed
+inline (Section~\ref{sec:max_action}) rather than via a separate helper:
+
+\begin{verbatim}
+# Middle fraction (not first, not last): in _resolve_current_fraction
+min_dose_reserved_for_future = (number_of_fractions - fraction_index_today) * min_dose
+max_allowed_action = np.minimum(action_space[-1],
+    prescribed_dose - accumulated_dose - min_dose_reserved_for_future)
+max_action_index = np.abs(action_space - max_allowed_action).argmin()
+max_action_index = max(max_action_index, 1)
+feasible_actions = action_space[:max_action_index + 1]
+
+feasible_overlap_penalty = penalty_calc_matrix(feasible_actions, _VOLUME_SPACE, min_dose)
+immediate_cost  = penalty_calc_single(feasible_actions, min_dose, observed_overlap)
+
+future_accumulated_dose = accumulated_dose + feasible_actions
+future_accumulated_dose[future_accumulated_dose > prescribed_dose] = overdose_sentinel
+overdose_penalties = np.zeros(future_accumulated_dose.shape)
+overdose_penalties[future_accumulated_dose > prescribed_dose] = -1e12
+
+future_value_prob = _bellman_expectation(
+    values[-1], _VOLUME_SPACE, current_overlap_probs,
+    initial_belief_mu, initial_belief_sigma, observation_count
+)
+future_values = linear_interp(dose_space, future_value_prob, future_accumulated_dose)
+
+state_values_full_grid = -feasible_overlap_penalty + future_values + overdose_penalties
+current_fraction_policy = feasible_actions[state_values_full_grid.argmax(axis=1)]
+
+actual_value     = -immediate_cost + future_values + overdose_penalties
+recommended_dose = feasible_actions[actual_value.argmax()]
+\end{verbatim}
+
+The logic is identical to Case~3 except that
+\code{feasible_actions} is shorter (high actions that would
+overshoot are excluded), and \code{accumulated_dose} shifts the future-dose
+axis.  Note that \code{linear_interp} IS still used here (unlike fraction~1)
+because \code{accumulated_dose} is an external caller input that may not lie
+exactly on the grid.
+
+\subsection{Case 5: Actual fraction is the last fraction ($f = F$)}
+
+No DP is needed: deliver exactly what is left.  This case is reached when
+\code{fraction_index_today == number_of_fractions}.
+
+\begin{verbatim}
+elif fraction_index_today == number_of_fractions:
+    recommended_dose = np.clip(remaining_ptv_dose, min_dose, max_dose)
+    actual_value = np.zeros(1)
+\end{verbatim}
+
+\code{np.clip} clamps \code{remaining_ptv_dose} to $[\dmin, \dmax]$.
+
+\code{actual_value = np.zeros(1)} represents a value of zero for the last
+fraction: there is no future left to optimise, so the value is defined to be
+zero (the penalty was already paid in the terminal case calculation).
+
+\subsection{Return values}
+
+After the loop, results are rounded and returned:
+
+\begin{verbatim}
+physical_dose = np.round(recommended_dose, 2)
+penalty_added = penalty_calc_single(physical_dose, min_dose, observed_overlap)
+optimal_state_value = np.max(actual_value)
+return [
+    policies,              # (n_s, N_D, J, N_mu, N_sigma) -- full policy table
+    current_fraction_policy,  # (J,) -- optimal dose for every overlap value
+    volume_space,          # (J,) -- the overlap grid used
+    physical_dose,         # float -- recommended dose for this fraction
+    penalty_added,         # float -- OAR cost of the recommended dose
+    values,                # (n_s, N_D, J, N_mu, N_sigma) -- full value table
+    dose_space,            # (N_D,) -- accumulated dose grid
+    current_overlap_probs, # (J,) -- current belief probabilities
+    optimal_state_value,   # float -- best total expected OAR cost from this fraction onward
+]
+\end{verbatim}
+
+Most callers only use index~3 (the recommended physical dose).
+The full tables are available for visualisation and debugging.
+
+\begin{note}
+\code{optimal_state_value} is \code{np.max(actual_value)}, the best total
+expected OAR cost from this fraction to end of treatment.  It is negative
+(less negative = better; a value of 0 at the last fraction is correct since
+no future fractions remain).  Most callers only use index~3, the recommended
+physical dose.
+\end{note}
+
+\clearpage
+%% ============================================================
+\section{Public API Functions}
+%% ============================================================
+
+\subsection{\code{adaptfx_full}: replay a complete treatment course}
+\label{sec:adaptfx_full}
+%% (formerly 7.2, now 7.1 after removal of policy_calc)
+
+\paragraph{Purpose.}
+Given all $F$ overlap volumes for a complete treatment (known in retrospect),
+simulate what the algorithm would have recommended at each fraction.  Returns
+the full dose sequence and the total penalty.
+
+\paragraph{Why this is the primary benchmarking entry point.}
+In the 58-patient benchmark cohort, the true overlaps for each fraction are
+known.  \code{adaptfx_full} replays the algorithm on each patient's real
+trajectory --- as if we were planning fraction by fraction with only the
+overlaps seen so far available --- and compares the resulting total penalty
+against both the old solver and the theoretical ideal upper bound.
+
+\begin{note}[Sign convention for \code{total_penalty}]
+Despite its name, \code{total_penalty} is computed using \code{-=}
+applied to non-negative per-fraction penalty values, so the returned
+value is $\leq 0$.  It is the accumulated \emph{reward} (negative
+penalty) over the treatment course, not the raw total penalty.  A value
+closer to zero means a better outcome (lower total OAR cost); in
+benchmarking, higher (less negative) is better.
+\end{note}
+
+\begin{verbatim}
+def adaptfx_full(volumes, number_of_fractions=DEFAULT_NUMBER_OF_FRACTIONS,
+                 min_dose=DEFAULT_MIN_DOSE, max_dose=DEFAULT_MAX_DOSE,
+                 mean_dose=DEFAULT_MEAN_DOSE, ...):
+    physical_doses    = np.zeros(number_of_fractions)
+    accumulated_doses = np.zeros(number_of_fractions)
+
+    for index, frac in enumerate(range(1, number_of_fractions + 1)):
+        if frac != number_of_fractions:
+            # At fraction frac, overlaps 0..frac are known
+            # (planning scan o_0 plus treatment fractions o_1..o_frac).
+            # Slice: volumes[:-F+frac] gives the first frac+1 elements.
+            physical_dose = adaptive_fractionation_core(
+                fraction_index_today=frac,
+                volumes=np.array(volumes[:-number_of_fractions + frac]),
+                accumulated_dose=accumulated_doses[index],
+                ...
+            )[3]   # index 3 is the recommended dose
+            accumulated_doses[index + 1] = accumulated_doses[index] + physical_dose
+        else:
+            # Last fraction: use all observed overlaps
+            physical_dose = adaptive_fractionation_core(
+                fraction_index_today=frac,
+                volumes=np.array(volumes),
+                accumulated_dose=accumulated_doses[index],
+                ...
+            )[3]
+        physical_doses[index] = physical_dose
+
+    total_penalty = 0
+    for index, dose in enumerate(physical_doses):
+        total_penalty -= penalty_calc_single(
+            dose, min_dose, volumes[-number_of_fractions + index]
+        )
+    return physical_doses, accumulated_doses, total_penalty
+\end{verbatim}
+
+\paragraph{Slice logic.}  At fraction $f$, the slice
+\code{volumes[:-F+f]} gives \code{volumes[0:f+1]}, i.e.\ the first $f+1$
+overlaps ($o_0$ through $o_f$: the planning scan plus all $f$ delivered
+treatment fractions, including the current one).  At $f = F$
+the full array is used directly.
+
+\subsection{\code{precompute_plan}: build a dose lookup table}
+\label{sec:precompute}
+%% (formerly 7.3, now 7.2 after removal of policy_calc)
+
+\paragraph{Purpose.}
+Before the overlap for the next fraction is measured, precompute the dose
+the algorithm would recommend for each possible overlap value.  The result
+is a lookup table; once the real overlap is measured, the dose can be read
+off immediately without waiting for the DP.
+
+\paragraph{Scanning loop.}
+The function scans candidate overlaps from 0~cc upward in 0.1~cc steps.
+For each candidate, it injects that value as the last element of the
+observed overlap array and calls \code{adaptive_fractionation_core} to
+get the recommendation.
+
+\begin{verbatim}
+def precompute_plan(fraction_index_today, volumes, accumulated_dose, ...):
+    volumes = np.asarray(volumes, dtype=float)
+    std = std_calc(volumes, alpha, beta)
+    distribution_params = (volumes.mean(), std)
+    volume_space = get_state_space(distribution_params)
+    distribution_max = (6.5 if volume_space.max() < 6.5
+                        else volume_space.max())
+    min_dose_deliverable = min_dose_to_deliver(
+        accumulated_dose=accumulated_dose,
+        fractions_left=number_of_fractions - fraction_index_today + 1,
+        prescribed_dose=mean_dose * number_of_fractions,
+        min_dose=min_dose, max_dose=max_dose
+    )
+
+    # Run the expensive DP backward sweep ONCE — independent of which
+    # overlap will be observed, so the result is reused for every candidate.
+    ctx = _build_dp_context(
+        fraction_index_today, number_of_fractions, accumulated_dose,
+        min_dose, max_dose, mean_dose, dose_steps
+    )
+
+    volumes_to_check = [0.0]
+    predicted_policies = []
+
+    while True:
+        volume = volumes_to_check[-1]
+        # Cheap per-candidate lookup: only the current-fraction step is re-run.
+        recommended_dose, _, _, _ = _resolve_current_fraction(
+            ctx, fraction_index_today, number_of_fractions, volume, volumes, alpha, beta
+        )
+        physical_dose = np.round(recommended_dose, 2)
+        predicted_policies.append(physical_dose)
+
+        covered_distribution_range = volume >= distribution_max
+        reached_minimum_policy = physical_dose <= min_dose_deliverable
+        if covered_distribution_range and reached_minimum_policy:
+            break
+        volumes_to_check.append(np.round(volume + 0.1, 10))
+
+    ...
+    return volume_x_dose, volumes_to_check, predicted_policies
+\end{verbatim}
+
+\paragraph{Stopping criterion.}
+Scanning stops when \emph{both} conditions hold:
+\begin{enumerate}
+  \item The scanned overlap exceeds \code{distribution_max}, which is
+        the 99.9th percentile of the current belief $\mathcal{N}(\mu,
+        \sigma^2)$, floored at \textbf{6.5~cc}.  Beyond this point, the
+        probability of a real overlap landing there is negligible.
+  \item The recommended dose has dropped to the minimum feasible dose.
+        Once the dose saturates at the minimum, further scanning cannot
+        produce a different recommendation.
+\end{enumerate}
+
+\paragraph{Why 6.5~cc as the floor?}
+\code{get_state_space} returns the 0.1th--99.9th percentile interval of
+$\mathcal{N}(\mu, \sigma^2)$.  For patients with small mean overlap and
+$\sigma$ close to the population prior mean ($\approx 0.78$~cc), the
+99.9th percentile can fall well below 2~cc---far below the volume at which
+the policy drops to the minimum dose.  Without a floor, the scan would
+stop too early for such patients and the returned lookup table would be
+incomplete: high-overlap entries would not be computed at all.
+
+6.5~cc is an empirically-derived safety margin: across the full 58-patient
+ACTION cohort with default dose parameters ($d_{\min}=6$~Gy,
+$d_{\max} \leq 10$~Gy), the optimal policy is observed to saturate at the
+minimum dose for all patients before the scanned volume reaches 6.5~cc.
+It is therefore the smallest floor value that makes condition~1 a safe
+stopping guard for every patient in the dataset.  It is \emph{not} a
+formal clinical protocol threshold.
+
+\paragraph{Backward-sweep caching.}
+The DP backward sweep (\code{_build_dp_context}) is independent of which
+overlap will be observed at the current fraction, so it is called \emph{once}
+before the scanning loop.  Each candidate overlap in the loop then only
+requires the cheap \code{_resolve_current_fraction} step (Bellman
+expectation at the actual starting belief), which is $O(N_{\text{overlap}})$
+rather than $O(n_s \times N_D \times N_\mu \times N_\sigma \times N_{\text{overlap}})$.
+This makes \code{precompute_plan} roughly $N_{\text{candidates}} \times$ faster than
+calling the full \code{adaptive_fractionation_core} once per candidate.
+
+\paragraph{Float-drift guard.}
+The step \code{np.round(volume + 0.1, 10)} prevents accumulated floating-point
+error from repeated additions of $0.1$ (which is not exactly representable
+in binary).  After many iterations, unguarded addition would drift from the
+true value.
+
+\clearpage
+%% ============================================================
+\section{End-to-End Call Flow}
+\label{sec:callflow}
+%% ============================================================
+
+The following steps trace a complete planning call for a mid-treatment
+fraction ($1 < f < F$).  Numbers in parentheses refer to the sections that
+describe each step.
+
+\begin{enumerate}
+  \item User calls \code{adaptive_fractionation_core(...)} with
+        \code{volumes = o_{0:f}} and accumulated dose $D_f$.
+        Here $o_{0:f}$ denotes the planning scan overlap $o_0$ followed
+        by the $f$ treatment-fraction overlaps $o_1, \ldots, o_f$;
+        \code{volumes} has length $f+1$.
+  \item \textbf{Backward sweep --- \code{_build_dp_context}}
+        (Section~\ref{sec:bellman}):
+    \begin{enumerate}
+      \item \textbf{Feasibility check}
+            (Section~\ref{sec:feasibility}): if $\Dgoal - D_f$ is outside
+            the reachable range, return an infeasible context immediately.
+      \item \textbf{i=0} (Section~\ref{sec:bellman_terminal}): fill
+            terminal values using forced action; broadcast over belief dims.
+      \item \textbf{i=1\ldots $n_s - 1$}
+            (Section~\ref{sec:bellman_intermediate}): for each hypothetical
+            future fraction:
+            \begin{enumerate}
+              \item \code{_bellman_expectation_full_grid}: vectorised Welford update
+                    over all $(i, s, j)$ triples, then probability-weighted
+                    accumulation $\to$ \code{future_value_prob_full}.
+              \item Direct \code{searchsorted} lookup onto action-induced doses.
+              \item Valid-actions mask computed inline.
+              \item Numba kernel \code{_fill_values_policies}: subtract
+                    per-overlap penalty and \code{argmax}
+                    to fill \code{values[i]}.
+            \end{enumerate}
+    \end{enumerate}
+  \item \textbf{Actual-fraction step --- \code{_resolve_current_fraction}}:
+    \begin{enumerate}
+      \item Compute $\mathrm{\code{initial_belief_mu}} = \mathrm{mean}(o_{0:f})$.
+      \item Compute $\mathrm{\code{initial_belief_sigma}} =
+            \code{std_calc}(o_{0:f}, \alpha, \beta)$
+            (MAP estimate with Gamma prior).
+      \item Compute \code{current_overlap_probs} $=
+            \code{current_belief_probdist}(\mathrm{\code{initial_belief_mu}},
+            \mathrm{\code{initial_belief_sigma}})$
+            (441-element probability vector over \code{_VOLUME_SPACE}).
+      \item \code{_bellman_expectation} at the single starting belief
+            using \code{values[-1]} from the backward sweep.
+      \item \code{linear_interp} onto the clipped action array
+            (middle fractions) or direct lookup (fraction~1).
+      \item \code{argmax} gives \code{recommended_dose}.
+    \end{enumerate}
+  \item Round \code{recommended_dose} to 2 decimal places.
+  \item Return 9-element result list; index~3 is the recommended dose.
+\end{enumerate}
+
+\begin{note}[Edge cases: $f = 1$ and $f = F$]
+The walkthrough above covers a mid-treatment fraction ($1 < f < F$).
+Two edge cases differ:
+\begin{itemize}
+  \item \textbf{First fraction ($f = 1$)}: No accumulated dose ($D_1 = 0$),
+        so the action set is not clipped by previous deliveries.
+        The backward pass runs states~0 through $n_s = F - 1$, ending
+        at Case~3 (Section~\ref{sec:bellman_actual_f1}) instead of Case~4.
+  \item \textbf{Last fraction ($f = F$)}: No DP is performed.  The function
+        detects that the current fraction is the final one and delivers the
+        remaining dose directly (Case~5: ``Actual fraction is the last
+        fraction'').  It then returns without computing or storing any
+        value or policy tables.
+\end{itemize}
+\end{note}
+
+\clearpage
+%% ============================================================
+\section{Grid Sizes and Computational Cost}
+\label{sec:complexity}
+%% ============================================================
+
+\subsection{Grid dimensions at default settings}
+
+\begin{center}
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Quantity} & \textbf{Symbol} & \textbf{Value} \\
+\hline
+Mu grid points       & $N_\mu$   & 150 \\
+Sigma grid points    & $N_\sigma$ & 11 \\
+Overlap grid points  & $J$        & 441 \\
+Dose-state points    & $N_D$      & $\approx (\Dgoal - D_f)/\delta_d + 2$ \\
+Action points        & $N_a$      & $(\dmax - \dmin)/\delta_d + 1 = 9$ \\
+Fractions remaining  & $n_s$      & $F - f$ \\
+\hline
+\end{tabular}
+\end{center}
+
+At fraction~1 with defaults: $N_D \approx 70$
+(\code{np.arange(6.0,\,40.0,\,0.5)} gives 68 points, plus the \code{goal}
+and sentinel entries), $n_s = 4$.
+
+\subsection{Memory}
+\label{sec:memory}
+
+The dominant memory cost comes from the value and policy tables, each
+allocated at full 5D shape:
+\[
+  n_s \times N_D \times J \times N_\mu \times N_\sigma \times 8~\text{bytes}
+  = 4 \times 70 \times 441 \times 150 \times 11 \times 8
+  \approx 1{,}630~\text{MB} \approx 1.63~\text{GB per array.}
+\]
+Both \code{values} and \code{policies} are allocated at this size, giving
+a combined DP footprint of approximately \textbf{3.26~GB} at fraction~1.
+The precomputed \code{_P_BELIEF} array adds a further 6~MB.
+
+\begin{note}
+The large memory footprint is a known cost of the 5D extension's full belief-state
+representation.  It is the primary reason planning calls take on the order
+of tens of seconds.
+\end{note}
+
+\begin{note}[System requirements]
+The 3.26~GB figure covers only the \code{values} and \code{policies} arrays.
+Additional RAM is consumed by the Python interpreter, OS, the 6~MB
+\code{_P_BELIEF} table, and temporary intermediate arrays created during
+the DP loop (e.g.\ Welford arrays of shape $150 \times 11 \times 441$).
+In practice, total resident memory at fraction~1 is approximately
+4--5~GB.
+
+\medskip
+\noindent Practical guidance for first-time setup:
+\begin{itemize}
+  \item \textbf{16~GB RAM or more}: recommended; arrays fit comfortably
+        with room for OS and intermediate buffers.
+  \item \textbf{8~GB RAM}: marginal at fraction~1; the system will compete
+        for the remaining $\sim$3--4~GB.  Expect longer planning times and
+        possible paging on some configurations.
+  \item \textbf{Less than 8~GB RAM}: likely to cause out-of-memory errors
+        or extreme slowness at fraction~1, which has the largest
+        $n_s = F - 1$ backward-pass depth.
+\end{itemize}
+No formal minimum-RAM test has been performed; the figures above are
+derived from the memory accounting in Section~\ref{sec:memory}.
+\end{note}
+
+\subsection{Operation count}
+
+For each hypothetical future fraction, the dominant operations are:
+\begin{itemize}
+  \item \textbf{Welford update} (Step~1): $O(N_\mu \cdot N_\sigma \cdot J)$
+        element-wise operations $= 150 \times 11 \times 441
+        \approx 0.73$~million.
+  \item \textbf{Weighted sum} (Step~3): $O(J \cdot N_D \cdot N_\mu \cdot N_\sigma)
+        = 441 \times 70 \times 150 \times 11 \approx 51$~million.
+  \item \textbf{Value update} (Step~5): $O(J \cdot N_D \cdot N_\mu
+        \cdot N_\sigma \cdot N_a) = 441 \times 70 \times 150 \times 11
+        \times 9 \approx 458$~million.
+\end{itemize}
+Summing over $n_s - 1 = 3$ hypothetical fractions:
+$\approx 3 \times 510 \approx 1{,}530$~million ($1.5$ billion) operations.
+
+\clearpage
+%% ============================================================
+\section{Key Design Decisions and Their Rationale}
+\label{sec:decisions}
+%% ============================================================
+
+This section summarises the non-obvious design choices and explains why each
+was made.  Understanding these decisions is important for anyone modifying
+the code.
+
+\begin{description}
+  \item[Fixed wide \code{_VOLUME_SPACE} (not patient-specific).]
+        Section~\ref{sec:volumespace} explains in detail why using a
+        patient-specific grid corrupts the DP for beliefs far from the
+        observed range.  The fixed wide grid is the correct fix: it ensures
+        correct transitions for all 150~$\times$~11 belief grid points,
+        including extreme ones.
+
+  \item[Tail assignment in \code{_P_BELIEF}.]
+        Without equations~\eqref{eq:lefttail}--\eqref{eq:righttail}, rows
+        of \code{_P_BELIEF} would sum to less than~1 for beliefs near the
+        edges of the range.  The weighted sum in Step~3 would then
+        systematically underestimate the expected future value, biasing the
+        policy toward lower doses.
+
+  \item[Non-uniform \code{_MU_GRID} with fine resolution near 0~cc.]
+        A patient with $\mu = 0.37$~cc mapped to the grid point $\mu = 0$
+        would see all branches land at the same overlap bin (0~cc), giving
+        zero penalty everywhere and making the DP assign arbitrary doses.
+        Fine resolution in $[0, 1]$~cc prevents this.
+
+  \item[\code{_MU_GRID} extended to 30~cc.]
+        Patients with observed overlaps $> 12$~cc exist in the benchmark.
+        Clipping to 12~cc would underestimate their distribution and
+        produce overly aggressive dosing for those patients.
+
+  \item[Population variance (\code{ddof=0}) throughout.]
+        The published 2025 paper uses population variance.  Switching to
+        Bessel's correction (\code{ddof=1}) would give \code{nan} at $n=1$
+        and would produce different behaviour at small $n$, breaking the
+        regression baseline.
+
+  \item[MAP estimate for $\sigma_{\mathrm{start}}$ via discrete argmax.]
+        The analytical MAP formula involves solving a polynomial equation;
+        the discrete grid scan is simpler, robust at $n=1$ (where the
+        data term vanishes and the prior dominates), and accurate to well
+        within clinical precision.
+
+  \item[Precomputed \code{_P_BELIEF} at module load time.]
+        The probability array depends only on fixed constants.  Precomputing
+        it once eliminates $N_\mu \times N_\sigma = 1{,}650$ batched CDF
+        evaluations from every planning call.  The array is computed by
+        \code{_precompute_branch_probabilities()} in \code{belief_model.py}.
+
+  \item[$j$-loop with accumulation in \code{_bellman_expectation_full_grid} (instead of full materialisation).]
+        The full intermediate array would exceed 600~MB.  The $j$-loop keeps
+        peak memory at $\approx 1.6$~MB per iteration (one $j$-slice),
+        which fits in L3 cache and allows the loop to run at memory-bandwidth
+        speed rather than main-memory speed.
+
+  \item[Transpose before the Numba kernel (\code{future_values_masked_action_last}).]
+        The action axis is moved to the last position so the \code{argmax}
+        inside \code{_fill_values_policies} scans a contiguous memory region ---
+        approximately 18\% faster.
+
+  \item[Numba JIT kernel \code{_fill_values_policies} for the innermost $j$-loop.]
+        The $j$-loop over 441 overlap bins (the Step~5 argmax) is the throughput
+        bottleneck.  Parallelising it with \code{prange} gives a multi-core speedup;
+        the flat-index trick avoids heap allocation inside each iteration.
+
+  \item[\code{searchsorted} for \code{nearest_idx}.]
+        Binary search ($O(n \log K)$) is $\approx 20\times$ faster than
+        \code{argmin} ($O(nK)$) for the 150-point mu grid on large arrays.
+        This function is called once per Step~1 of every hypothetical
+        fraction, so the speedup is significant.
+
+  \item[Flat belief index arithmetic instead of \code{take_along_axis}.]
+        \code{take_along_axis} allocates a temporary array on every call.
+        Precomputing \code{flat_index_base} and using integer addition inside
+        the Numba kernel avoids this allocation and saves one heap allocation
+        per iteration.
+\end{description}
+
+\end{document}

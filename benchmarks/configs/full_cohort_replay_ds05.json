@@ -1,0 +1,20 @@
+{
+  "name": "full_cohort_replay_ds05",
+  "description": "Replay benchmark over full ACTION cohort (58 patients), dose_steps=0.5, with discrete upper-bound DP.",
+  "dataset_path": "evaluation/ACTION_patients_overlap_only.xlsx",
+  "number_of_fractions": 5,
+  "min_dose": 6.0,
+  "dose_step": 0.5,
+  "max_dose_policy": {
+    "default": 10.0,
+    "mean_gt_8_lte_9": 11.0,
+    "mean_gt_9": 12.0
+  },
+  "upper_bound": {
+    "enabled": true,
+    "step": 0.5
+  },
+  "metrics": {
+    "tail_disadvantage_threshold": -1.0
+  }
+}

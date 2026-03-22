@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-03-06T16:39:43.931905+00:00",
+  "label": "stage_a_v4_smoke",
+  "git": {
+    "commit": "d7a4bc58ed72b832e9e1cc458d3eccf9aaeaea80",
+    "short_commit": "d7a4bc5",
+    "branch": "perf/adaptfx-core-hotpath-optimizations",
+    "dirty": true
+  },
+  "system": {
+    "python_version": "3.12.7 | packaged by Anaconda, Inc. | (main, Oct  4 2024, 13:17:27) [MSC v.1929 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc"
+  },
+  "paths": {
+    "config": "benchmarks\\configs\\full_cohort_replay_ds05.json",
+    "dataset": "evaluation\\ACTION_patients_overlap_only.xlsx"
+  },
+  "config": {
+    "name": "full_cohort_replay_ds05",
+    "description": "Replay benchmark over full ACTION cohort (58 patients), dose_steps=0.5, with discrete upper-bound DP.",
+    "dataset_path": "evaluation/ACTION_patients_overlap_only.xlsx",
+    "number_of_fractions": 5,
+    "min_dose": 6.0,
+    "dose_step": 0.5,
+    "max_dose_policy": {
+      "default": 10.0,
+      "mean_gt_8_lte_9": 11.0,
+      "mean_gt_9": 12.0
+    },
+    "upper_bound": {
+      "enabled": true,
+      "step": 0.5
+    },
+    "metrics": {
+      "tail_disadvantage_threshold": -1.0
+    }
+  },
+  "summary": {
+    "case_count": 5,
+    "benefit_af_stats": {
+      "count": 5,
+      "min": -1.4604575000000466,
+      "max": 15.68180249999996,
+      "mean": 3.7672739999999676,
+      "median": 1.360097499999993,
+      "p05": -1.1261225000000479,
+      "p95": 13.154183999999963
+    },
+    "upper_bound_benefit_stats": {
+      "count": 5,
+      "min": 2.124159999999991,
+      "max": 15.988739999999964,
+      "mean": 5.518261499999973,
+      "median": 3.3124599999999873,
+      "p05": 2.1357589999999846,
+      "p95": 13.587750499999963
+    },
+    "tail_disadvantage_threshold": -1.0,
+    "tail_disadvantage_count": 1,
+    "tail_disadvantage_fraction": 0.2,
+    "timing_sec": {
+      "total_runtime": 33.00200439989567,
+      "adaptive_fractionation_total": 32.99947919975966,
+      "upper_bound_total": 0.002007500035688281,
+      "adaptive_fractionation_stats": {
+        "count": 5,
+        "min": 6.336291000014171,
+        "max": 6.743145099841058,
+        "mean": 6.599895839951932,
+        "median": 6.636351099936292,
+        "p05": 6.392215819982812,
+        "p95": 6.728071459895
+      },
+      "upper_bound_stats": {
+        "count": 5,
+        "min": 0.00032940017990767956,
+        "max": 0.0005274000577628613,
+        "mean": 0.0004015000071376562,
+        "median": 0.0003325999714434147,
+        "p05": 0.00033002011477947237,
+        "p95": 0.0005190400406718254
+      }
+    }
+  },
+  "cases": [
+    {
+      "case_id": "1",
+      "patient_number": 1,
+      "overlaps": [
+        2.02,
+        2.41,
+        3.04,
+        1.96,
+        5.3,
+        3.27
+      ],
+      "prescription_dose": 33.0,
+      "mean_dose": 6.6,
+      "max_dose": 10.0,
+      "af_doses": [
+        6.5,
+        6.5,
+        7.0,
+        6.0,
+        7.0
+      ],
+      "af_accumulated_doses": [
+        0.0,
+        6.5,
+        13.0,
+        20.0,
+        26.0
+      ],
+      "total_penalty_af": -10.097562499999999,
+      "standard_penalty": -11.457659999999992,
+      "benefit_af": 1.360097499999993,
+      "upper_bound_doses": [
+        7.0,
+        6.5,
+        7.5,
+        6.0,
+        6.0
+      ],
+      "upper_bound_penalty": 9.3335,
+      "upper_bound_benefit": 2.124159999999991,
+      "timings_sec": {
+        "adaptive_fractionation": 6.336291000014171,
+        "upper_bound_discrete_dp": 0.0005274000577628613
+      }
+    },
+    {
+      "case_id": "2",
+      "patient_number": 2,
+      "overlaps": [
+        6.19,
+        10.97,
+        4.91,
+        7.65,
+        5.73,
+        5.87
+      ],
+      "prescription_dose": 33.0,
+      "mean_dose": 6.6,
+      "max_dose": 10.0,
+      "af_doses": [
+        6.0,
+        7.5,
+        6.5,
+        6.5,
+        6.5
+      ],
+      "af_accumulated_doses": [
+        0.0,
+        6.0,
+        13.5,
+        20.0,
+        26.5
+      ],
+      "total_penalty_af": -22.1445,
+      "standard_penalty": -25.188209999999987,
+      "benefit_af": 3.0437099999999866,
+      "upper_bound_doses": [
+        6.0,
+        7.0,
+        6.0,
+        7.0,
+        7.0
+      ],
+      "upper_bound_penalty": 21.87575,
+      "upper_bound_benefit": 3.3124599999999873,
+      "timings_sec": {
+        "adaptive_fractionation": 6.667776900110766,
+        "upper_bound_discrete_dp": 0.00048559997230768204
+      }
+    },
+    {
+      "case_id": "3",
+      "patient_number": 3,
+      "overlaps": [
+        9.08,
+        19.79,
+        6.02,
+        9.45,
+        19.59,
+        12.62
+      ],
+      "prescription_dose": 33.0,
+      "mean_dose": 6.6,
+      "max_dose": 10.0,
+      "af_doses": [
+        6.0,
+        8.0,
+        6.5,
+        6.0,
+        6.5
+      ],
+      "af_accumulated_doses": [
+        0.0,
+        6.0,
+        14.0,
+        20.5,
+        26.5
+      ],
+      "total_penalty_af": -32.6941875,
+      "standard_penalty": -48.37598999999996,
+      "benefit_af": 15.68180249999996,
+      "upper_bound_doses": [
+        6.0,
+        8.0,
+        7.0,
+        6.0,
+        6.0
+      ],
+      "upper_bound_penalty": 32.387249999999995,
+      "upper_bound_benefit": 15.988739999999964,
+      "timings_sec": {
+        "adaptive_fractionation": 6.743145099841058,
+        "upper_bound_discrete_dp": 0.0003324998542666435
+      }
+    },
+    {
+      "case_id": "4",
+      "patient_number": 4,
+      "overlaps": [
+        15.07,
+        19.81,
+        16.12,
+        22.630000000000003,
+        18.09,
+        15.44
+      ],
+      "prescription_dose": 33.0,
+      "mean_dose": 6.6,
+      "max_dose": 10.0,
+      "af_doses": [
+        6.5,
+        7.0,
+        6.0,
+        7.0,
+        6.5
+      ],
+      "af_accumulated_doses": [
+        0.0,
+        6.5,
+        13.5,
+        19.5,
+        26.5
+      ],
+      "total_penalty_af": -65.81731250000001,
+      "standard_penalty": -66.02852999999996,
+      "benefit_af": 0.21121749999994677,
+      "upper_bound_doses": [
+        6.5,
+        7.0,
+        6.0,
+        6.5,
+        7.0
+      ],
+      "upper_bound_penalty": 63.846375,
+      "upper_bound_benefit": 2.182154999999959,
+      "timings_sec": {
+        "adaptive_fractionation": 6.636351099936292,
+        "upper_bound_discrete_dp": 0.00032940017990767956
+      }
+    },
+    {
+      "case_id": "5",
+      "patient_number": 5,
+      "overlaps": [
+        17.150000000000002,
+        18.68,
+        18.35,
+        28.560000000000002,
+        21.37,
+        22.98
+      ],
+      "prescription_dose": 33.0,
+      "mean_dose": 6.6,
+      "max_dose": 10.0,
+      "af_doses": [
+        6.5,
+        6.5,
+        6.0,
+        7.0,
+        7.0
+      ],
+      "af_accumulated_doses": [
+        0.0,
+        6.5,
+        13.0,
+        19.0,
+        26.0
+      ],
+      "total_penalty_af": -80.28743750000001,
+      "standard_penalty": -78.82697999999996,
+      "benefit_af": -1.4604575000000466,
+      "upper_bound_doses": [
+        7.0,
+        7.0,
+        6.0,
+        6.5,
+        6.5
+      ],
+      "upper_bound_penalty": 74.8431875,
+      "upper_bound_benefit": 3.9837924999999643,
+      "timings_sec": {
+        "adaptive_fractionation": 6.615915099857375,
+        "upper_bound_discrete_dp": 0.0003325999714434147
+      }
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860">
+  <rect width="1280" height="860" fill="#fcfcf8"/>
+
+  <text x="40" y="48" font-family="Helvetica, Arial, sans-serif" font-size="30" font-weight="700" fill="#222">
+    Why D95 can stop seeing added overlap volume
+  </text>
+  <text x="40" y="82" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    Toy setup: PTV = 40 cc, non-overlap dose = 10 Gy, overlap-limited dose = 6 Gy
+  </text>
+  <text x="40" y="112" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    D95 means the dose received by at least 95% of the PTV, so only 2 cc may lie below D95.
+  </text>
+
+  <rect x="40" y="140" width="22" height="22" fill="#efd33a" stroke="#d1ac18" stroke-width="1.5"/>
+  <text x="72" y="157" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#333">
+    overlap-limited PTV at 6 Gy
+  </text>
+  <rect x="320" y="140" width="22" height="22" fill="#7ca9e8" stroke="#4a78b9" stroke-width="1.5"/>
+  <text x="352" y="157" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#333">
+    rest of PTV at 10 Gy
+  </text>
+
+  <text x="220" y="190" font-family="Helvetica, Arial, sans-serif" font-size="17" fill="#555">
+    PTV voxels sorted from lowest to highest dose
+  </text>
+
+  <text x="40" y="252" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#222">
+    Case 1
+  </text>
+  <text x="40" y="280" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    overlap = 1 cc = 2.5% of PTV
+  </text>
+
+  <rect x="220" y="232" width="16" height="42" fill="#efd33a" stroke="#d1ac18" stroke-width="2"/>
+  <rect x="236" y="232" width="624" height="42" fill="#7ca9e8" stroke="#4a78b9" stroke-width="2"/>
+  <line x1="252" y1="220" x2="252" y2="286" stroke="#7c6d4d" stroke-width="3" stroke-dasharray="8,6"/>
+  <text x="266" y="224" font-family="Helvetica, Arial, sans-serif" font-size="16" fill="#7c6d4d">
+    2 cc cutoff for D95
+  </text>
+
+  <text x="900" y="246" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    D1cc(OAR) = 6 Gy
+  </text>
+  <text x="900" y="274" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    D95(PTV) = 10 Gy
+  </text>
+  <text x="900" y="302" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#222">
+    SF = 0.60
+  </text>
+  <text x="900" y="330" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    underdosage proxy = 1 x 4 = 4 ccGy
+  </text>
+
+  <text x="40" y="442" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#222">
+    Case 2
+  </text>
+  <text x="40" y="470" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    overlap = 3 cc = 7.5% of PTV
+  </text>
+
+  <rect x="220" y="422" width="48" height="42" fill="#efd33a" stroke="#d1ac18" stroke-width="2"/>
+  <rect x="268" y="422" width="592" height="42" fill="#7ca9e8" stroke="#4a78b9" stroke-width="2"/>
+  <line x1="252" y1="410" x2="252" y2="476" stroke="#7c6d4d" stroke-width="3" stroke-dasharray="8,6"/>
+
+  <text x="900" y="436" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    D1cc(OAR) = 6 Gy
+  </text>
+  <text x="900" y="464" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    D95(PTV) = 6 Gy
+  </text>
+  <text x="900" y="492" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#222">
+    SF = 1.00
+  </text>
+  <text x="900" y="520" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    underdosage proxy = 3 x 4 = 12 ccGy
+  </text>
+
+  <text x="40" y="632" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#222">
+    Case 3
+  </text>
+  <text x="40" y="660" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    overlap = 10 cc = 25% of PTV
+  </text>
+
+  <rect x="220" y="612" width="160" height="42" fill="#efd33a" stroke="#d1ac18" stroke-width="2"/>
+  <rect x="380" y="612" width="480" height="42" fill="#7ca9e8" stroke="#4a78b9" stroke-width="2"/>
+  <line x1="252" y1="600" x2="252" y2="666" stroke="#7c6d4d" stroke-width="3" stroke-dasharray="8,6"/>
+
+  <text x="900" y="626" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    D1cc(OAR) = 6 Gy
+  </text>
+  <text x="900" y="654" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#333">
+    D95(PTV) = 6 Gy
+  </text>
+  <text x="900" y="682" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#222">
+    SF = 1.00
+  </text>
+  <text x="900" y="710" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#444">
+    underdosage proxy = 10 x 4 = 40 ccGy
+  </text>
+
+  <rect x="40" y="760" width="1200" height="72" rx="12" fill="#f0efe8" stroke="#d2d0c4" stroke-width="1"/>
+  <text x="60" y="788" font-family="Helvetica, Arial, sans-serif" font-size="20" font-weight="700" fill="#222">
+    Takeaway
+  </text>
+  <text x="60" y="817" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#333">
+    Once the low-dose overlap region exceeds 5% of the PTV, D95 can collapse to 6 Gy and then stop changing,
+  </text>
+  <text x="60" y="841" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#333">
+    even while more and more cubic centimeters remain underdosed. That makes SF insensitive to larger overlaps.
+  </text>
+</svg>

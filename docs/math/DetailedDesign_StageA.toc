@@ -1,0 +1,108 @@
+\contentsline {section}{\numberline {1}High-Level Overview}{4}{}%
+\contentsline {subsection}{\numberline {1.1}What the algorithm does}{4}{}%
+\contentsline {subsection}{\numberline {1.2}How the 5D Extension improves the baseline}{4}{}%
+\contentsline {subsection}{\numberline {1.3}File map}{4}{}%
+\contentsline {section}{\numberline {2}Background Concepts}{5}{}%
+\contentsline {subsection}{\numberline {2.1}Dynamic programming --- the core idea}{5}{}%
+\contentsline {paragraph}{State.}{5}{}%
+\contentsline {paragraph}{Value function.}{5}{}%
+\contentsline {paragraph}{Policy.}{6}{}%
+\contentsline {paragraph}{The Bellman equation --- value function defined recursively.}{6}{}%
+\contentsline {paragraph}{Why go backwards?}{6}{}%
+\contentsline {paragraph}{Reward vs.\ penalty sign convention.}{7}{}%
+\contentsline {subsection}{\numberline {2.2}Probabilistic modelling --- prior, posterior, and MAP}{7}{}%
+\contentsline {paragraph}{What is a probability distribution over parameters?}{7}{}%
+\contentsline {paragraph}{Prior: knowledge before seeing data.}{7}{}%
+\contentsline {paragraph}{Likelihood: what the data tells us.}{7}{}%
+\contentsline {paragraph}{Posterior: combining prior and data.}{7}{}%
+\contentsline {paragraph}{MAP: the single best estimate.}{7}{}%
+\contentsline {subsection}{\numberline {2.3}Hypothetical branches: imagining future overlaps}{8}{}%
+\contentsline {paragraph}{How branches are handled computationally.}{8}{}%
+\contentsline {subsection}{\numberline {2.4}Running mean and variance: Welford's algorithm}{8}{}%
+\contentsline {subsection}{\numberline {2.5}NumPy broadcasting: arrays of different shapes computed together}{9}{}%
+\contentsline {subsection}{\numberline {2.6}NumPy advanced indexing: gathering values at irregular positions}{9}{}%
+\contentsline {section}{\numberline {3}Parameters, Constants, and Notation}{11}{}%
+\contentsline {subsection}{\numberline {3.1}Clinical parameters}{11}{}%
+\contentsline {subsection}{\numberline {3.2}Penalty function constants}{11}{}%
+\contentsline {section}{\numberline {4}Helper Functions}{12}{}%
+\contentsline {subsection}{\numberline {4.1}\code {std_calc} --- MAP estimate of the overlap standard deviation}{12}{}%
+\contentsline {paragraph}{Purpose.}{12}{}%
+\contentsline {paragraph}{Why not just use the sample standard deviation?}{12}{}%
+\contentsline {paragraph}{Mathematical derivation.}{12}{}%
+\contentsline {subsection}{\numberline {4.2}\code {get_state_space} --- patient-specific overlap grid}{13}{}%
+\contentsline {paragraph}{Purpose.}{13}{}%
+\contentsline {subsection}{\numberline {4.3}\code {probdist} --- bin probabilities for an overlap distribution}{14}{}%
+\contentsline {paragraph}{Purpose.}{14}{}%
+\contentsline {paragraph}{Formula.}{14}{}%
+\contentsline {subsection}{\numberline {4.4}Penalty functions}{14}{}%
+\contentsline {paragraph}{Purpose.}{14}{}%
+\contentsline {paragraph}{Mathematical form.}{15}{}%
+\contentsline {subsubsection}{\numberline {4.4.1}\code {penalty_calc_single} --- penalty for one dose and one overlap}{15}{}%
+\contentsline {paragraph}{\code {np.where} --- element-wise conditional selection.}{15}{}%
+\contentsline {subsubsection}{\numberline {4.4.2}\code {penalty_calc_matrix} --- penalty for all dose--volume combinations at once}{15}{}%
+\contentsline {subsection}{\numberline {4.5}Inline feasibility clipping --- how much dose can we still deliver?}{16}{}%
+\contentsline {paragraph}{Purpose.}{16}{}%
+\contentsline {subsection}{\numberline {4.6}\code {nearest_idx} --- snapping continuous values to a grid}{16}{}%
+\contentsline {paragraph}{Purpose.}{16}{}%
+\contentsline {paragraph}{How it works.}{17}{}%
+\contentsline {paragraph}{Why not use \code {np.argmin(np.abs(values - grid))}?}{17}{}%
+\contentsline {subsection}{\numberline {4.7}\code {linear_interp} --- interpolating between grid points}{17}{}%
+\contentsline {paragraph}{Purpose.}{17}{}%
+\contentsline {subsection}{\numberline {4.8}\code {min_dose_to_deliver} --- minimum dose needed right now}{17}{}%
+\contentsline {paragraph}{Purpose.}{17}{}%
+\contentsline {section}{\numberline {5}Belief-State Grids}{18}{}%
+\contentsline {subsection}{\numberline {5.1}The mu grid \code {_MU_GRID}: covering all patients}{18}{}%
+\contentsline {paragraph}{Why non-uniform?}{18}{}%
+\contentsline {paragraph}{Why extend to 30\nobreakspace {}cc?}{18}{}%
+\contentsline {paragraph}{Why 150 points total?}{19}{}%
+\contentsline {subsection}{\numberline {5.2}The sigma grid \code {_SIGMA_GRID}: covering variability}{19}{}%
+\contentsline {subsection}{\numberline {5.3}The fixed overlap state space \code {_VOLUME_SPACE}}{19}{}%
+\contentsline {subsection}{\numberline {5.4}Precomputed branch probabilities \code {_P_BELIEF}}{20}{}%
+\contentsline {paragraph}{Tail handling.}{20}{}%
+\contentsline {paragraph}{Reading the broadcasting.}{21}{}%
+\contentsline {section}{\numberline {6}Belief Update: Welford Running Moments}{22}{}%
+\contentsline {subsection}{\numberline {6.1}The update equations}{22}{}%
+\contentsline {paragraph}{Why is $n_t = f$ rather than $f+1$, even though \code {volumes} has $f+1$ elements?}{22}{}%
+\contentsline {subsection}{\numberline {6.2}Grid projection after the update}{22}{}%
+\contentsline {subsection}{\numberline {6.3}Scalar belief update: \code {_hypothetical_belief_grid_indices}}{23}{}%
+\contentsline {subsection}{\numberline {6.4}Expected future value for a scalar belief: \code {_bellman_expectation}}{23}{}%
+\contentsline {paragraph}{What we want.}{23}{}%
+\contentsline {paragraph}{Why fancy indexing is needed, and what \code {np.arange} does here.}{24}{}%
+\contentsline {section}{\numberline {7}The Bellman Recursion: \code {adaptive_fractionation_core}}{25}{}%
+\contentsline {subsection}{\numberline {7.1}Two key arrays: \code {dose_space} and \code {action_space}}{25}{}%
+\contentsline {paragraph}{The \code {overdose_sentinel}.}{25}{}%
+\contentsline {subsection}{\numberline {7.2}State representation and array layout}{25}{}%
+\contentsline {subsection}{\numberline {7.3}Action set}{26}{}%
+\contentsline {subsection}{\numberline {7.4}Hard feasibility guards}{26}{}%
+\contentsline {subsection}{\numberline {7.5}Initialisation from observed data}{27}{}%
+\contentsline {paragraph}{Code organisation note.}{27}{}%
+\contentsline {subsection}{\numberline {7.6}The DP backward-pass loop}{27}{}%
+\contentsline {subsection}{\numberline {7.7}Case 1: Terminal fraction (\code {i == 0})}{28}{}%
+\contentsline {paragraph}{Why clamp to $[d_{\qopname \relax m{min}}, d_{\qopname \relax m{max}}]$?}{28}{}%
+\contentsline {paragraph}{Why rounding?}{28}{}%
+\contentsline {paragraph}{Why is the terminal value belief-independent?}{28}{}%
+\contentsline {subsection}{\numberline {7.8}Case 2: Hypothetical future fractions (\code {i $>$ 0})}{29}{}%
+\contentsline {paragraph}{Why Numba?}{31}{}%
+\contentsline {paragraph}{\code {flat_index_base} --- row-major index arithmetic.}{31}{}%
+\contentsline {subsection}{\numberline {7.9}Case 3: Actual fraction --- first fraction ($f = 1$)}{31}{}%
+\contentsline {subsection}{\numberline {7.10}Case 4: Actual fraction --- intermediate ($f < F$, $f > 1$)}{32}{}%
+\contentsline {subsection}{\numberline {7.11}Case 5: Actual fraction is the last fraction ($f = F$)}{33}{}%
+\contentsline {subsection}{\numberline {7.12}Return values}{33}{}%
+\contentsline {section}{\numberline {8}Public API Functions}{34}{}%
+\contentsline {subsection}{\numberline {8.1}\code {adaptfx_full}: replay a complete treatment course}{34}{}%
+\contentsline {paragraph}{Purpose.}{34}{}%
+\contentsline {paragraph}{Why this is the primary benchmarking entry point.}{34}{}%
+\contentsline {paragraph}{Slice logic.}{35}{}%
+\contentsline {subsection}{\numberline {8.2}\code {precompute_plan}: build a dose lookup table}{35}{}%
+\contentsline {paragraph}{Purpose.}{35}{}%
+\contentsline {paragraph}{Scanning loop.}{35}{}%
+\contentsline {paragraph}{Stopping criterion.}{36}{}%
+\contentsline {paragraph}{Why 6.5\nobreakspace {}cc as the floor?}{36}{}%
+\contentsline {paragraph}{Backward-sweep caching.}{36}{}%
+\contentsline {paragraph}{Float-drift guard.}{36}{}%
+\contentsline {section}{\numberline {9}End-to-End Call Flow}{37}{}%
+\contentsline {section}{\numberline {10}Grid Sizes and Computational Cost}{38}{}%
+\contentsline {subsection}{\numberline {10.1}Grid dimensions at default settings}{38}{}%
+\contentsline {subsection}{\numberline {10.2}Memory}{38}{}%
+\contentsline {subsection}{\numberline {10.3}Operation count}{38}{}%
+\contentsline {section}{\numberline {11}Key Design Decisions and Their Rationale}{39}{}%

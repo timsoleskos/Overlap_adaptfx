@@ -167,6 +167,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests as integration tests (slower, multiple components)"
     )
+    config.addinivalue_line(
+        "markers", "slow: marks tests as slow (excluded from CI fast suite with -m 'not slow')"
+    )
 
 
 def pytest_collection_modifyitems(config, items):
