@@ -5,8 +5,123 @@ In this file are all helper functions that are needed for the adaptive fractiona
 
 import numpy as np
 from scipy.stats import norm, gamma
+from scipy.optimize import brentq
 import matplotlib.pyplot as plt
 from .constants import SLOPE, INTERCEPT
+
+
+# ── Mixture distribution ───────────────────────────────────────────────────────
+
+class MixtureDist:
+    """
+    Mixture of two Normal distributions sharing the same location but with
+    different scales:  w_low * N(mu, sigma_low) + w_high * N(mu, sigma_high).
+
+    Provides .pdf(), .cdf(), and .ppf() so it is a drop-in replacement for
+    scipy.stats.norm in get_state_space() and probdist().
+    """
+    def __init__(self, mu, sigma_low, sigma_high, w_high):
+        self.mu         = mu
+        self.sigma_low  = sigma_low
+        self.sigma_high = sigma_high
+        self.w_high     = float(w_high)
+        self.w_low      = 1.0 - self.w_high
+        self._d_low     = norm(loc=mu, scale=sigma_low)
+        self._d_high    = norm(loc=mu, scale=sigma_high)
+
+    def pdf(self, x):
+        return self.w_low * self._d_low.pdf(x) + self.w_high * self._d_high.pdf(x)
+
+    def cdf(self, x):
+        return self.w_low * self._d_low.cdf(x) + self.w_high * self._d_high.cdf(x)
+
+    def ppf(self, q):
+        lo = min(self._d_low.ppf(1e-6), self._d_high.ppf(1e-6))
+        hi = max(self._d_low.ppf(1 - 1e-6), self._d_high.ppf(1 - 1e-6))
+        if np.isscalar(q):
+            return brentq(lambda x: self.cdf(x) - q, lo, hi)
+        return np.array([brentq(lambda x: self.cdf(x) - qi, lo, hi)
+                         for qi in np.atleast_1d(q)])
+
+
+def fit_mixture_params(overlap_array):
+    """
+    Fits a 2-component Gaussian mixture model to per-patient within-treatment
+    standard deviations to identify 'stable' and 'volatile' patient sub-groups.
+
+    Fitting is done in log-space for numerical stability. Falls back to a
+    simple percentile split when sklearn is unavailable or the GMM components
+    are too close to be meaningful (ratio < 1.5).
+
+    Parameters
+    ----------
+    overlap_array : np.ndarray, shape (N, 6)
+        [planning_vol, frac1, ..., frac5] per patient.
+
+    Returns
+    -------
+    sigma_low : float    Typical within-patient std for stable patients.
+    sigma_high : float   Typical within-patient std for volatile patients.
+    pi_volatile : float  Prior probability that a patient is volatile.
+    """
+    treatment     = overlap_array[:, 1:]                           # (N, 5)
+    patient_stds  = np.maximum(treatment.std(axis=1, ddof=1), 0.05)
+
+    try:
+        from sklearn.mixture import GaussianMixture
+        log_stds = np.log(patient_stds).reshape(-1, 1)
+        best, best_bic = None, np.inf
+        for seed in range(30):
+            gmm = GaussianMixture(n_components=2, random_state=seed, n_init=1)
+            gmm.fit(log_stds)
+            bic = gmm.bic(log_stds)
+            if bic < best_bic:
+                best_bic, best = bic, gmm
+        idx_low, idx_high = np.argsort(best.means_.flatten())
+        sigma_low   = np.exp(best.means_.flatten()[idx_low])
+        sigma_high  = np.exp(best.means_.flatten()[idx_high])
+        pi_volatile = float(best.weights_[idx_high])
+        # Sanity: if components nearly identical, fall through to percentile method
+        if sigma_high / sigma_low < 1.5:
+            raise ValueError("Components too close; using percentile fallback.")
+    except Exception:
+        # Percentile fallback: bottom 75% → stable, top 25% → volatile
+        threshold   = np.percentile(patient_stds, 75)
+        sigma_low   = patient_stds[patient_stds <= threshold].mean()
+        sigma_high  = patient_stds[patient_stds >  threshold].mean()
+        pi_volatile = 0.25
+
+    return sigma_low, sigma_high, pi_volatile
+
+
+def mixture_posterior_weight(volumes, mu, sigma_low, sigma_high, pi_volatile):
+    """
+    Bayesian update of P(volatile | observations).
+
+    Given k observed volumes and a mean estimate mu, compute the posterior
+    probability that this patient belongs to the volatile component, using
+    the Normal likelihood under each component.
+
+    Parameters
+    ----------
+    volumes : array-like       Observed volumes (including planning scan).
+    mu : float                 Current mean estimate (volumes.mean()).
+    sigma_low, sigma_high : float   Component stds from fit_mixture_params.
+    pi_volatile : float        Prior P(volatile) from fit_mixture_params.
+
+    Returns
+    -------
+    p_volatile_post : float   Posterior P(volatile | volumes).
+    """
+    log_L_stable   = np.sum(norm.logpdf(volumes, loc=mu, scale=sigma_low))
+    log_L_volatile = np.sum(norm.logpdf(volumes, loc=mu, scale=sigma_high))
+    log_prior      = np.array([np.log(max(1 - pi_volatile, 1e-10)),
+                                np.log(max(pi_volatile,     1e-10))])
+    log_post       = np.array([log_L_stable + log_prior[0],
+                                log_L_volatile + log_prior[1]])
+    log_post      -= log_post.max()   # numerical stability
+    post           = np.exp(log_post)
+    return post[1] / post.sum()
 
 
 
