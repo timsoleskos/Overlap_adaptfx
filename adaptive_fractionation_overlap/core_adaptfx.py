@@ -1,5 +1,41 @@
 """
 This is the core of adaptive fractionation that computes the optimal dose for each fraction
+
+--- Algorithm improvement brainstorm (session claude/nig-algorithm-brainstorm-30CIB) ---
+
+Goal: improve mean ccGy penalty over 58-patient ACTION cohort beyond the BeliefState baseline.
+All approaches were evaluated with LOO cross-validation to avoid overfitting (N=58).
+
+Approaches tried:
+  1. Normal-Inverse-Gamma (NIG) conjugate update
+     Verdict: abandoned. NIG conflates within-patient variance σ² and mean discrepancy in
+     βₙ, so the posterior shrinks the predictive std toward zero for stable patients while
+     blowing up for patients with one outlier fraction. No net gain.
+
+  2. Hierarchical Normal-Normal (two-level: τ² between-patient, σ² within-patient)
+     Verdict: worse than BeliefState (mean −0.27 ccGy LOO). τ/σ ≈ 3.45 makes shrinkage
+     negligible and widens σ_pred for stable patients, hurting them.
+
+  3. Planning-scan calibration (use fraction-0 volume to shift μ₀)
+     Verdict: marginal at best; does not address the hard cases.
+
+  4. Two-component mixture model (stable/volatile Normal mixture, Bayesian weight update)
+     Verdict: worse (mean −0.10 ccGy LOO). σ_low estimated from population (0.50 cc) is
+     already larger than the true std of very-stable patients (~0.1 cc), so the "stable"
+     component is too diffuse to help.
+
+  5. Risk-adjusted DP: replace E[V] backup with E[V] − λ·std(V)  (λ=0.05)
+     Verdict: negligible improvement (mean +0.002 ccGy, median 0.00 ccGy LOO, 4/58
+     patients helped, 6/58 hurt). Not worth the added complexity.
+
+Root cause of limited headroom: the hard patients (e.g. #4, #15) have one fraction
+≥11σ away from early-fraction estimates. No tractable predictive distribution assigns
+meaningful probability to such jumps; the volume_space (2nd–98th percentile of the
+predictive) never reaches the true outlier volume, so no algorithm variant can hedge
+correctly for those cases. The BeliefState DP is already near-optimal for the majority
+of well-behaved patients.
+
+Conclusion: keep the clean BeliefState baseline (std_calc MAP + norm predictive + E[V] DP).
 """
 import numpy as np
 from scipy.interpolate import interp1d
