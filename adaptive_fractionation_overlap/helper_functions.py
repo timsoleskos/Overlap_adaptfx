@@ -10,6 +10,77 @@ from .constants import SLOPE, INTERCEPT
 
 
 
+def hierarchical_update(volumes, mu0, sigma2, tau2):
+    """
+    Two-level Normal-Normal hierarchical posterior predictive for the next
+    overlap volume.
+
+    Model
+    -----
+        x_ij | mu_i  ~  N(mu_i,  sigma2)   within-patient noise
+        mu_i         ~  N(mu0,   tau2)      between-patient variation
+
+    Given k = len(volumes) observations the posterior for mu_i is Normal, and
+    the predictive for the next observation is:
+
+        x_new | x ~ N(mu_post, sqrt(sigma2 + sigma2_mean_post))
+
+    Parameters
+    ----------
+    volumes : array-like
+        Observed overlap volumes for this patient so far.
+    mu0 : float
+        Population mean overlap volume (estimated from training cohort).
+    sigma2 : float
+        Within-patient variance (population estimate from training cohort).
+    tau2 : float
+        Between-patient variance of patient means (population estimate).
+
+    Returns
+    -------
+    mu_post : float
+        Posterior mean (shrunk toward mu0 when few observations available).
+    sigma_pred : float
+        Predictive std — within-patient noise plus remaining mean uncertainty.
+    """
+    k = len(volumes)
+    x_bar = np.mean(volumes)
+    lambda_prior = 1.0 / tau2
+    lambda_data = k / sigma2
+    lambda_total = lambda_prior + lambda_data
+    mu_post = (lambda_prior * mu0 + lambda_data * x_bar) / lambda_total
+    sigma2_mean_post = 1.0 / lambda_total
+    sigma_pred = np.sqrt(sigma2 + sigma2_mean_post)
+    return mu_post, sigma_pred
+
+
+def fit_hierarchical_params(overlap_array):
+    """
+    Estimates population-level hyperparameters for the hierarchical model from
+    a cohort of patients.  Only treatment fractions (columns 1-5) are used so
+    that planning-scan bias does not contaminate the within-patient variance
+    estimate.
+
+    Parameters
+    ----------
+    overlap_array : np.ndarray, shape (N, 6)
+        Each row: [planning_vol, frac1, frac2, frac3, frac4, frac5].
+
+    Returns
+    -------
+    mu0 : float   Population mean of per-patient treatment means.
+    sigma2 : float  Population mean of per-patient treatment variances.
+    tau2 : float  Population variance of per-patient treatment means.
+    """
+    treatment = overlap_array[:, 1:]          # shape (N, 5)
+    patient_means = treatment.mean(axis=1)
+    patient_vars  = treatment.var(axis=1)
+    mu0    = patient_means.mean()
+    sigma2 = patient_vars.mean()
+    tau2   = patient_means.var()
+    return mu0, sigma2, tau2
+
+
 def fit_planning_calibration(overlap_array):
     """
     Fits a linear calibration from planning scan volume to treatment mean volume
