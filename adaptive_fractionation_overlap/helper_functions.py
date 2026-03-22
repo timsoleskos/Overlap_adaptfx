@@ -10,6 +10,49 @@ from .constants import SLOPE, INTERCEPT
 
 
 
+def fit_planning_calibration(overlap_array):
+    """
+    Fits a linear calibration from planning scan volume to treatment mean volume
+    using OLS regression: treatment_mean = a * planning_vol + b.
+
+    Parameters
+    ----------
+    overlap_array : np.ndarray, shape (N, 6)
+        Each row is one patient: [planning_vol, frac1, frac2, frac3, frac4, frac5]
+
+    Returns
+    -------
+    a : float
+        Slope of the linear calibration
+    b : float
+        Intercept of the linear calibration
+    """
+    planning = overlap_array[:, 0]
+    treatment_means = overlap_array[:, 1:].mean(axis=1)
+    a, b = np.polyfit(planning, treatment_means, 1)
+    return a, b
+
+
+def calibrate_planning_vol(planning_vol, a, b):
+    """
+    Applies linear calibration to a single planning scan volume.
+
+    Parameters
+    ----------
+    planning_vol : float
+    a : float
+        Slope from fit_planning_calibration
+    b : float
+        Intercept from fit_planning_calibration
+
+    Returns
+    -------
+    float
+        Calibrated planning volume (clipped to >= 0)
+    """
+    return max(0.0, a * planning_vol + b)
+
+
 def data_fit(data):
     """
     This function fits a normal distribution for the given data
