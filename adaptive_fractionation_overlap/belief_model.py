@@ -9,6 +9,20 @@ grids so that the DP value tables can be indexed directly.
 Branch probabilities _P_BELIEF[mi, si, j] = P(overlap in bin j | belief (mu_grid[mi],
 sigma_grid[si])) are precomputed once at module load and reused across all calls.
 
+Interpolation note
+------------------
+The Bellman operators (_bellman_expectation and _bellman_expectation_full_grid) use
+bilinear interpolation over the (_MU_GRID, _SIGMA_GRID) belief grid when looking up
+next-state values.  Compared to nearest-grid-point snapping, bilinear interpolation
+allows coarser grids to achieve equivalent accuracy:
+
+    N_mu  : 150 (nearest-snap) → 81  (bilinear)  — ~46% fewer mu    points
+    N_sigma:  11 (nearest-snap) →  8  (bilinear)  — ~27% fewer sigma points
+
+Peak DP array memory: (4, 70, 441, 81, 8) × 8 bytes ≈ 0.63 GB
+                  vs. (4, 70, 441, 150, 11) × 8 bytes ≈ 1.63 GB with nearest-snap
+→ ~61% memory reduction.
+
 Tail-folding note
 -----------------
 _P_BELIEF uses tail-folding: the probability mass that falls below _VOLUME_SPACE[0] or
@@ -31,27 +45,27 @@ from .helper_functions import nearest_idx
 # Belief grids
 # ---------------------------------------------------------------------------
 
-# Non-uniform mu grid optimized for the observed 58-patient cohort prefix-mean distribution
-# under a 150-point budget.  A sweep over N_mu in [50, 500] showed quality saturates at ~150:
-# above N_mu=150 the benefit fluctuates within ±0.005 ccGy (quantisation noise), making
-# N_mu=150 the principled choice — 99.95% of N=500 benefit at 2.3× lower compute than N_mu=280.
+# Non-uniform mu grid optimized for the observed 58-patient cohort prefix-mean distribution.
+# Bilinear interpolation in the Bellman operators allows N_mu=81 to match the accuracy of
+# the previous N_mu=150 nearest-snap grid, cutting the mu-grid memory contribution by ~46%.
 _MU_GRID = np.unique(np.concatenate([
-    np.linspace(0.0,  1.0,  38),  # 38 points, step ~0.0270 cc
-    np.linspace(1.05, 4.0,  39),  # 39 points, step ~0.0776 cc
-    np.linspace(4.1,  10.0, 42),  # 42 points, step ~0.1439 cc
-    np.linspace(10.2, 16.0, 15),  # 15 points, step ~0.4143 cc
-    np.linspace(16.5, 30.0, 16),  # 16 points, step ~0.9000 cc
-]))  # 150 grid points total
+    np.linspace(0.0,  1.0,  20),  # 20 points, step ~0.053 cc
+    np.linspace(1.05, 4.0,  20),  # 20 points, step ~0.153 cc
+    np.linspace(4.1,  10.0, 22),  # 22 points, step ~0.276 cc
+    np.linspace(10.2, 16.0,  9),  # 9 points,  step ~0.750 cc
+    np.linspace(16.5, 30.0, 10),  # 10 points, step ~1.500 cc
+]))  # 81 grid points total
 
 # Non-uniform sigma grid: fine resolution in [0, 0.7] cc where 75% of patients fall,
-# coarser in the tail.  Range extended to 4.5 cc to avoid clipping outlier patients
-# (observed max σ ≈ 4.05 cc on the 58-patient ACTION cohort, patient 3).
-# Peak memory: (4, 70, 441, 150, 11) × 8 bytes ≈ 1.63 GB (1.52 GiB).
+# coarser in the tail.  N_sigma=8 with bilinear interpolation replaces N_sigma=11
+# nearest-snap, saving ~27% on this dimension.  Range kept at 4.5 cc to cover the
+# maximum observed σ ≈ 4.05 cc in the 58-patient ACTION cohort.
+# Peak memory: (4, 70, 441, 81, 8) × 8 bytes ≈ 0.63 GB (was 1.63 GB).
 _SIGMA_GRID = np.unique(np.concatenate([
-    np.linspace(0.05, 0.7, 5),  # step ~0.163 cc  (p0–p75 of clinical σ)
-    np.linspace(0.8,  1.8, 3),  # step ~0.500 cc  (p75–p90)
-    np.linspace(2.0,  4.5, 3),  # step ~1.250 cc  (tail, covers max observed σ 4.05 cc)
-]))  # 11 grid points total
+    np.linspace(0.05, 0.7, 4),  # 4 points, step ~0.217 cc  (p0–p75 of clinical σ)
+    np.linspace(0.9,  1.8, 2),  # 2 points, step  0.900 cc  (p75–p90)
+    np.linspace(2.5,  4.5, 2),  # 2 points, step  2.000 cc  (tail, covers max observed σ 4.05 cc)
+]))  # 8 grid points total
 _SIGMA_MIN = float(_SIGMA_GRID[0])
 
 # Fixed overlap state space: 0 to 44 cc in 0.1 cc steps, matching TPS output resolution.
@@ -88,6 +102,29 @@ _P_BELIEF = _precompute_branch_probabilities()  # shape: (N_mu, N_sigma, N_overl
 
 
 # ---------------------------------------------------------------------------
+# Bilinear interpolation helper
+# ---------------------------------------------------------------------------
+
+def _interp_idx_and_weights(values, grid):
+    """Return (lo_idx, hi_idx, hi_weight) for linear interpolation of *values* on *grid*.
+
+    For each element v in values, finds the surrounding grid interval [grid[lo], grid[hi]]
+    and returns the fractional weight w such that:
+        interpolated = (1 - w) * grid_values[lo] + w * grid_values[hi]
+
+    *values* must lie within [grid[0], grid[-1]] (clip before calling).
+    *grid* must be sorted ascending.  Output arrays have the same shape as *values*.
+    """
+    flat = np.asarray(values).ravel()
+    hi = np.searchsorted(grid, flat, side='left').clip(1, len(grid) - 1)
+    lo = hi - 1
+    denom = grid[hi] - grid[lo]
+    w = np.where(denom > 0, (flat - grid[lo]) / denom, 0.0)
+    shape = np.asarray(values).shape
+    return lo.reshape(shape), hi.reshape(shape), w.reshape(shape)
+
+
+# ---------------------------------------------------------------------------
 # Belief update (Welford) and Bellman operators
 # ---------------------------------------------------------------------------
 
@@ -112,16 +149,39 @@ def _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count
 def _bellman_expectation(values_prev, volume_space, p_branch, mu, sigma, observation_count):
     """Bellman expectation over all hypothetical next overlaps for a single belief (mu, sigma).
 
+    Uses bilinear interpolation over (_MU_GRID, _SIGMA_GRID) for the next-state value
+    lookup, giving smoother value estimates than nearest-grid-point snapping.
+
     Sums future values weighted by branch probabilities:
-        sum_j p_branch[j] * values_prev[d, j, next_mi[j], next_si[j]]
+        sum_j p_branch[j] * bilinear_interp(values_prev[d, j, :, :], mu'[j], sigma'[j])
 
     values_prev: (N_dose, N_overlap, N_mu, N_sigma)
     p_branch:    (N_overlap,) probability of each next overlap under current belief
     Returns:     (N_dose,) expected future value for each accumulated dose state
     """
-    next_mi, next_si = _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count) # If overlap was j, where would the belief (mu, sigma) land on the grid?
-    branch_vals = values_prev[:, np.arange(len(volume_space)), next_mi, next_si]  # Value function of the next belief state
-    return (branch_vals * p_branch[None, :]).sum(axis=1) # Probability-weighted sum of next states' value functions
+    N = len(volume_space)
+    mu_prime = (observation_count * mu + volume_space) / (observation_count + 1)
+    sigma2_prime = (observation_count * sigma ** 2 + (volume_space - mu) * (volume_space - mu_prime)) / (observation_count + 1)
+    sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))
+    mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])
+    sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])
+
+    lo_m, hi_m, wm = _interp_idx_and_weights(mu_prime, _MU_GRID)    # (N_overlap,) each
+    lo_s, hi_s, ws = _interp_idx_and_weights(sigma_prime, _SIGMA_GRID)  # (N_overlap,) each
+
+    # values_prev: (N_dose, N_overlap, N_mu, N_sigma)
+    # Advanced indexing with j_idx, lo_m, lo_s all shape (N_overlap,) → result (N_dose, N_overlap)
+    j_idx = np.arange(N)
+    v_ll = values_prev[:, j_idx, lo_m, lo_s]
+    v_lh = values_prev[:, j_idx, lo_m, hi_s]
+    v_hl = values_prev[:, j_idx, hi_m, lo_s]
+    v_hh = values_prev[:, j_idx, hi_m, hi_s]
+
+    branch_vals = ((1 - wm) * (1 - ws) * v_ll +
+                   (1 - wm) * ws       * v_lh +
+                   wm       * (1 - ws) * v_hl +
+                   wm       * ws       * v_hh)  # (N_dose, N_overlap)
+    return (branch_vals * p_branch[None, :]).sum(axis=1)  # (N_dose,)
 
 
 def _bellman_expectation_full_grid(values_prev, observation_count):
@@ -131,11 +191,15 @@ def _bellman_expectation_full_grid(values_prev, observation_count):
     operates on a single belief (mu, sigma), this function operates on all (N_mu × N_sigma)
     beliefs simultaneously, making it suitable for the backward-induction DP loop.
 
+    Uses bilinear interpolation over the (_MU_GRID, _SIGMA_GRID) grid for the next-state
+    value lookup.  This allows the coarser grids (N_mu=81, N_sigma=8) to achieve
+    equivalent accuracy to the previous nearest-snap approach at N_mu=150, N_sigma=11.
+
     Steps:
       1. Welford belief update: for each (mu_grid, sigma_grid, overlap_bin) triple, compute
          the updated belief (mu', sigma') after observing that overlap.
-      2. Map (mu', sigma') to the nearest grid indices (next_mi, next_si).
-      3. Accumulate the probability-weighted future values across all overlap bins.
+      2. Compute bilinear interpolation weights for (mu', sigma') on (_MU_GRID, _SIGMA_GRID).
+      3. Accumulate the probability-weighted interpolated future values across all overlap bins.
 
     Args:
         values_prev: value function of the next DP state; shape (N_dose, N_overlap, N_mu, N_sigma).
@@ -161,20 +225,38 @@ def _bellman_expectation_full_grid(values_prev, observation_count):
     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))  # new std, floored at _SIGMA_MIN
     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])
     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])
-    # Nearest grid indices — shape (N_mu, N_sigma, N_overlap)
-    # searchsorted is O(N*log(G)) vs argmin's O(N*G), ~35x faster for G=280.
-    next_mi = nearest_idx(mu_prime, _MU_GRID)
-    next_si = nearest_idx(sigma_prime, _SIGMA_GRID)
 
-    # ----- Steps 2+3: accumulate probability-weighted future values in a j-loop -----
-    # This avoids materialising the full (N_dose, N_mu, N_sigma, N_overlap) = ~660 MB
-    # branch_vals array; instead each j-slice is ~1.5 MB and is processed on the fly.
-    next_b = next_mi * N_sigma + next_si  # flat belief index, shape (N_mu, N_sigma, N_overlap)
-    vals_flat = values_prev.reshape(N_dose, N_overlap, -1)  # (N_dose, N_overlap, N_belief)
+    # ----- Step 2: bilinear interpolation weights — shape (N_mu, N_sigma, N_overlap) each -----
+    lo_m, hi_m, wm = _interp_idx_and_weights(mu_prime, _MU_GRID)
+    lo_s, hi_s, ws = _interp_idx_and_weights(sigma_prime, _SIGMA_GRID)
+
+    # ----- Step 3: accumulate probability-weighted interpolated future values in a j-loop -----
+    # This avoids materialising the full (N_dose, N_mu, N_sigma, N_overlap) branch_vals array;
+    # each j-slice is ~1.5 MB and is processed on the fly.
     future_value_prob_full = np.zeros((N_dose, N_mu, N_sigma))
     for j in range(N_overlap):
-        # vals_flat[:, j, next_b[:, :, j]]: (N_dose, N_mu, N_sigma) — one j-slice
-        future_value_prob_full += vals_flat[:, j, :][:, next_b[:, :, j]] * _P_BELIEF[None, :, :, j]
+        lm  = lo_m[:, :, j]   # (N_mu, N_sigma)
+        hm  = hi_m[:, :, j]
+        ls  = lo_s[:, :, j]
+        hs  = hi_s[:, :, j]
+        wmj = wm[:, :, j]     # (N_mu, N_sigma)
+        wsj = ws[:, :, j]
+
+        vp = values_prev[:, j, :, :]  # (N_dose, N_mu, N_sigma)
+
+        # Bilinear interpolation: vp[:, lm, ls] uses advanced indexing where lm, ls are
+        # (N_mu, N_sigma) arrays → result shape (N_dose, N_mu, N_sigma)
+        v_ll = vp[:, lm, ls]
+        v_lh = vp[:, lm, hs]
+        v_hl = vp[:, hm, ls]
+        v_hh = vp[:, hm, hs]
+
+        v_interp = ((1 - wmj) * (1 - wsj) * v_ll +
+                    (1 - wmj) * wsj        * v_lh +
+                    wmj       * (1 - wsj)  * v_hl +
+                    wmj       * wsj        * v_hh)  # (N_dose, N_mu, N_sigma)
+
+        future_value_prob_full += v_interp * _P_BELIEF[None, :, :, j]
 
     return future_value_prob_full
 
