@@ -167,9 +167,6 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "integration: marks tests as integration tests (slower, multiple components)"
     )
-    config.addinivalue_line(
-        "markers", "slow: marks tests as slow (performance or stress tests)"
-    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -179,17 +176,13 @@ def pytest_collection_modifyitems(config, items):
     This function runs after pytest collects all tests and can
     automatically add markers based on test names or locations.
     """
-    # Automatically mark slow tests
     for item in items:
-        if "slow" in item.name or "performance" in item.name:
-            item.add_marker(pytest.mark.slow)
-            
         # Mark integration tests
         if "integration" in item.name or "full" in item.name or "end_to_end" in item.name:
             item.add_marker(pytest.mark.integration)
-            
+
         # Mark unit tests (default for most tests)
-        elif not any(marker.name in ["integration", "slow"] for marker in item.iter_markers()):
+        elif not any(marker.name == "integration" for marker in item.iter_markers()):
             item.add_marker(pytest.mark.unit)
 
 
@@ -285,7 +278,7 @@ def assert_algorithm_output(result, expected_length=9):
     
     # Unpack and check types
     [policies, policies_overlap, volume_space, physical_dose, 
-     penalty_added, values, dose_space, probabilities, final_penalty] = result
+     penalty_added, values, dose_space, probabilities, optimal_state_value] = result
     
     assert isinstance(policies, np.ndarray), "Policies should be numpy array"
     assert isinstance(policies_overlap, np.ndarray), "Policies overlap should be numpy array" 
@@ -295,7 +288,7 @@ def assert_algorithm_output(result, expected_length=9):
     assert isinstance(values, np.ndarray), "Values should be numpy array"
     assert isinstance(dose_space, np.ndarray), "Dose space should be numpy array"
     assert isinstance(probabilities, np.ndarray), "Probabilities should be numpy array"
-    assert isinstance(final_penalty, (float, np.floating)), "Final penalty should be scalar"
+    assert isinstance(optimal_state_value, (float, np.floating)), "Final penalty should be scalar"
 
 
 # Test data generators

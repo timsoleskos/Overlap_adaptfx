@@ -3,52 +3,30 @@
 In this file are all helper functions that are needed for the adaptive fractionation calculation
 """
 
+__all__ = [
+    "std_calc",
+    "get_state_space",
+    "probdist",
+    "penalty_calc_single",
+    "penalty_calc_matrix",
+    "actual_policy_plotter",
+    "analytic_plotting",
+    "min_dose_to_deliver",
+    "build_dose_decision_lines",
+]
+
 import numpy as np
-from scipy.stats import norm, gamma
+from scipy.stats import norm
+import matplotlib
 import matplotlib.pyplot as plt
 from .constants import SLOPE, INTERCEPT
 
 
 
-def data_fit(data):
-    """
-    This function fits a normal distribution for the given data
-
-    Parameters
-    ----------
-    data : array or list
-        list with n elements for each observed overlap volume
-
-    Returns
-    -------
-    frozen function
-        normal distribution
-    """
-    mu, std = norm.fit(data)
-    return norm(loc = mu, scale = std)
-
-def hyperparam_fit(data):
-    """
-    This function fits the alpha and beta value for the prior
-
-    Parameters
-    ----------
-    data : array
-        a nxk matrix with n the amount of patints and k the amount of sparing factors per patient.
-
-    Returns
-    -------
-    list
-        alpha and beta hyperparameter.
-    """
-    vars = data.var(axis=1)
-    alpha, loc, beta = gamma.fit(vars, floc=0)
-    return [alpha, beta]
-
 def std_calc(measured_data, alpha, beta):
     """
     calculates the most likely standard deviation for a list of k overlap volumes and a gamma prior
-    measured_data: list/array with k sparing factors
+    measured_data: list/array with k overlap volumes
 
     Parameters
     ----------
@@ -57,13 +35,16 @@ def std_calc(measured_data, alpha, beta):
     alpha : float
         shape of gamma distribution
     beta : float
-        scale of gamma distrinbution
+        scale of gamma distribution
 
     Returns
     -------
     std : float
         most likely std based on the measured data and gamma prior
 
+    Note: the search grid covers [0.001, 10) cc in 0.001 cc steps.  If the true MAP
+    sigma exceeds ~9.999 cc the returned value silently saturates at 9.999 cc.
+    In clinical practice (58-patient cohort max σ ≈ 3.3 cc) this cap is never reached.
     """
     n = len(measured_data)
     std_values = np.arange(0.001, 10, 0.001)
@@ -81,20 +62,24 @@ def std_calc(measured_data, alpha, beta):
 
 def get_state_space(distribution):
     """
-    This function spans the state space for different volumes based on a probability distribution
+    Returns a 200-point linspace spanning the 0.1st to 99.9th percentile of a normal distribution.
+
+    NOTE: this is NOT the DP's state space (_VOLUME_SPACE in belief_model.py).
+    It is used only in precompute_plan to determine the scan stop criterion (distribution_max).
 
     Parameters
     ----------
-    distribution : frozen function
-        normal distribution
+    distribution : tuple(float, float)
+        (mean, std) parameters of a normal distribution
 
     Returns
     -------
-    state_space: Array spanning from the 2% percentile to the 98% percentile with a normalized spacing to define 100 states
-        np.array
+    state_space : np.ndarray
+        200 evenly-spaced points from the 0.1th to 99.9th percentile.
     """
-    lower_bound = distribution.ppf(0.001)
-    upper_bound = distribution.ppf(0.999)
+    mean_volume, std_volume = distribution
+    lower_bound = norm.ppf(0.001, loc=mean_volume, scale=std_volume)
+    upper_bound = norm.ppf(0.999, loc=mean_volume, scale=std_volume)
 
     return np.linspace(lower_bound,upper_bound,200)
 
@@ -102,22 +87,30 @@ def probdist(X,state_space):
     """
     This function produces a probability distribution based on the normal distribution X
 
+    Note: unlike _P_BELIEF (belief_model.py), this function does NOT fold the left/right
+    tails into the boundary bins, so the returned probabilities may sum to less than 1.0
+    when the distribution tails extend beyond state_space.  See current_belief_probdist
+    in belief_model.py for the version used by the Stage A DP solver.
+
     Parameters
     ----------
-    X : scipy.stats._distn_infrastructure.rv_frozen
-        distribution function.
+    X : tuple(float, float)
+        (mean, std) parameters of a normal distribution.
+    state_space : np.ndarray
+        uniform grid of bin centres (must be equally spaced).
 
     Returns
     -------
     prob : np.array
-        array with probabilities for each sparing factor.
+        probability of each bin; sums to ≤ 1.0 (< 1.0 when tails extend beyond state_space).
 
     """
     spacing = state_space[1]-state_space[0]
     upper_bounds = state_space + spacing/2
     lower_bounds = state_space - spacing/2
-    prob = X.cdf(upper_bounds) - X.cdf(lower_bounds)
-    return np.array(prob) #note: this will only add up to roughly 96% instead of 100%
+    mean_volume, std_volume = X
+    prob = norm.cdf(upper_bounds, loc=mean_volume, scale=std_volume) - norm.cdf(lower_bounds, loc=mean_volume, scale=std_volume)
+    return prob
 
 def penalty_calc_single(physical_dose, min_dose, actual_volume, intercept=INTERCEPT, slope=SLOPE):
     """
@@ -163,7 +156,7 @@ def penalty_calc_matrix(delivered_doses, volume_space, min_dose, intercept=INTER
     """
     This function calculates the penalty for the given dose and volume by adding the triangle arising from the dose gradient
     if the dose delivered is larger than the uniform fractionated dose.
-    
+
     Parameters
     ----------
     delivered_doses : array
@@ -176,11 +169,15 @@ def penalty_calc_matrix(delivered_doses, volume_space, min_dose, intercept=INTER
         Penalty function intercept (default from constants)
     slope : float, optional
         Penalty function slope (default from constants)
-        
+
     Returns
     -------
-    overlap_penalty : array
-        The calculated penalty matrix for all dose-volume combinations
+    overlap_penalty : array, shape (len(volume_space), len(delivered_doses))
+        The calculated penalty matrix for all dose-volume combinations.
+
+    Note: unlike penalty_calc_single, this function does NOT zero out entries where
+    delivered_doses < min_dose; those entries will be negative.  The caller is
+    responsible for masking or ignoring infeasible (below-min-dose) actions.
     """
     steepness = np.abs(intercept + slope * volume_space)
     overlap_penalty_linear = (np.outer(volume_space, (delivered_doses - min_dose)))
@@ -188,29 +185,6 @@ def penalty_calc_matrix(delivered_doses, volume_space, min_dose, intercept=INTER
     overlap_penalty = overlap_penalty_linear + overlap_penalty_quadratic
     return overlap_penalty
 
-
-def max_action(accumulated_dose, dose_space, goal):
-    """
-    Computes the maximal dose that can be delivered to the tumor in each fraction depending on the actual accumulated dose
-
-    Parameters
-    ----------
-    accumulated_dose : float
-        accumulated tumor dose so far.
-    dose_space : list/array
-        array with all discrete dose steps.
-    goal : float
-        prescribed tumor dose.
-    Returns
-    -------
-    sizer : integer
-        gives the size of the resized actionspace to reach the prescribed tumor dose.
-
-    """
-    max_action = min(max(dose_space), goal - accumulated_dose)
-    sizer = np.argmin(np.abs(dose_space - max_action))
-    sizer = 1 if sizer == 0 else sizer #Make sure that at least the minimum dose is delivered
-    return sizer
 
 def actual_policy_plotter(policies_overlap: np.ndarray,volume_space: np.ndarray, probabilities: np.ndarray = None):
     """plots the actual policy given the overlap in volume space and the policies in policies overlap
@@ -242,6 +216,11 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
     """plots all future values given the values calculated by adaptive_fractionation_core.
     Only available for fractions 1 - (number of fractions - 1)
 
+    INCOMPATIBLE WITH STAGE A OUTPUT: adaptive_fractionation_core (Stage A, belief-state DP)
+    returns a 5D values array with shape (remaining_fractions, N_dose, N_overlap, N_mu, N_sigma).
+    This function expects a 3D array with shape (remaining_fractions, volume_space, dose_space)
+    from the earlier Stage 0 solver.  Passing a 5D array raises ValueError.
+
     Args:
         fraction (int): number of actual fraction
         number_of_fractions (int): total number of fractions
@@ -251,11 +230,22 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
 
     Returns:
         matplotlib.fig: returns a figure with all values plotted as subfigures
+
+    Raises:
+        ValueError: if values is not a 3D array (e.g. 5D Stage A output is passed).
     """
+    if values.ndim != 3:
+        raise ValueError(
+            f"analytic_plotting expects a 3D values array (remaining_fractions × volume_space × dose_space), "
+            f"got shape {values.shape} ({values.ndim}D). "
+            "The Stage A belief-state DP (adaptive_fractionation_core) returns a 5D values array "
+            "and is not compatible with this plotting function."
+        )
+    values = values.copy()
     values[values < -10000000000] = 10000000000
     min_Value = np.min(values)
     values[values == 10000000000] = 1.1*min_Value
-    colormap = plt.cm.get_cmap('jet')
+    colormap = matplotlib.colormaps['jet']
     number_of_plots = number_of_fractions - fraction
     fig, axs = plt.subplots(1,number_of_plots, figsize = (number_of_plots*10,10))
     if number_of_plots > 1:
@@ -278,7 +268,26 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
 
     return fig
 
-def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed_dose: float, min_dose: float, max_dose: float = None) -> float:
+def linear_interp(x_values: np.ndarray, y_values: np.ndarray, query_points):
+    """Fast linear interpolation for 1D/2D query arrays."""
+    query = np.asarray(query_points)
+    return np.interp(query.ravel(), x_values, y_values).reshape(query.shape)
+
+
+def nearest_idx(values, grid):
+    """Return nearest-grid-point indices for every element in *values*.
+
+    Uses searchsorted (O(n log G)) instead of argmin (O(n*G)), so it scales
+    well when the grid is large.  *grid* must be sorted ascending.
+    """
+    flat = np.asarray(values).ravel()
+    hi = np.searchsorted(grid, flat, side='left').clip(1, len(grid) - 1)
+    lo = hi - 1
+    idx = np.where(flat - grid[lo] <= grid[hi] - flat, lo, hi)
+    return idx.reshape(np.asarray(values).shape)
+
+
+def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed_dose: float, min_dose: float, max_dose: float) -> float:
     """
     This function calculates the minimal dose that needs to be delivered in the current fraction to still reach the goal
 
@@ -290,8 +299,8 @@ def min_dose_to_deliver(accumulated_dose: float, fractions_left: int, prescribed
         number of fractions left including the current one
     min_dose : float
         minimal dose that can be delivered in one fraction
-    max_dose : float, optional
-        maximal dose that can be delivered in one fraction, by default None
+    max_dose : float
+        maximal dose that can be delivered in one fraction
 
     Returns
     -------
