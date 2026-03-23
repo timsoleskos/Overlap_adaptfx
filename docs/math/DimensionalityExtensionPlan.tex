@@ -440,10 +440,23 @@ $(\alpha_0, \beta_0)$ combination that beats Stage~A.  The pattern across 36 gri
 points is uniformly negative, with no sign of an unexplored positive region.
 
 \item The 54/58 tied patients have dose trajectories that are identical under
-Stage~A and log-NIG regardless of hyperparameters.  Improvement can only come from
-the 4~patients where models differ; the Student-$t$ tails help high-variability
-patients and hurt near-zero-overlap patients (log-floor effect at
-$\log(0 + 0.1) \approx -2.30$\,nat), netting close to zero.
+Stage~A and log-NIG regardless of hyperparameters.  The tying mechanism is
+\emph{not} that patients hit the hard min/max dose bounds; it is that for patients
+with consistent overlap patterns, both the Gaussian (cc-space) and Student-$t$
+(log-space) predictives lead to the same qualitative conclusion at every fraction ---
+``overlap is reliably low, push dose high'' or ``overlap is reliably high, keep
+dose low'' --- so the Bellman recursion selects the same 0.5\,Gy dose bin either
+way.  A belief model can only change a dose decision when the predictive uncertainty
+about future overlaps is large enough to shift the optimal action across a dose-step
+boundary.  Improvement can therefore only come from the 4~patients whose overlap
+trajectories fall in the ambiguous range where model choice actually crosses such a
+boundary: the Student-$t$ tails help high-variability patients (e.g.\ patient~11,
+$\hat\sigma \approx 0.26$\,cc) and hurt near-zero-overlap patients (e.g.\ patients
+22 and~41, mean $< 0.15$\,cc) via the log-floor effect
+($\log(0 + 0.1) \approx -2.30$\,nat), netting close to zero.  Any belief model
+improvement will be bounded by the number of patients in this ambiguous range unless
+the model change is structurally different enough to move additional patients off the
+tying point.
 
 \item \textbf{The semi-conjugate model (independent Normal prior on $\mu$,
 Inverse-Gamma prior on $\sigma^2$) is mathematically equivalent to $\kappa_0 \to
