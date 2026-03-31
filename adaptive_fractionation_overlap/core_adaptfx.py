@@ -134,7 +134,8 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
     # Verify that every action_space value lies exactly on the dose_space grid (same step size and alignment).
     # This is required for the direct index lookup in the DP loop to be correct — if this fails, the lookup
     # would silently return values from the wrong grid point instead of raising an error.
-    assert np.allclose(np.mod(action_space - dose_space[0], dose_steps), 0, atol=1e-9), (
+    _fracs = (action_space - dose_space[0]) / dose_steps
+    assert np.allclose(_fracs, np.round(_fracs), atol=1e-6), (
         "action_space values must all lie on the dose_space grid; "
         "direct index lookup requires that action_space and dose_space share the same step size and alignment. "
         f"dose_steps={dose_steps}, dose_space[0]={dose_space[0]}, action_space[0]={action_space[0]}"
