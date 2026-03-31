@@ -30,5 +30,8 @@ DEFAULT_DOSE_STEPS = 0.5
 DEFAULT_NUMBER_OF_FRACTIONS = 5
 
 # Gamma distribution parameters
-DEFAULT_ALPHA = 1.072846744379587
-DEFAULT_BETA = 0.7788684130749829
+# NOTE: alpha and beta now parameterise a Gamma prior on precision τ=1/σ² (units: cc⁻²).
+# Values below are a rough translation from the original prior-on-σ (mean σ≈0.84 cc →
+# mean τ≈1.42 cc⁻²); they need proper re-fitting to the 58-patient cohort.
+DEFAULT_ALPHA = 1.072846744379587                  # OLD (prior on σ): 1.072846744379587
+DEFAULT_BETA = 1.3228446444370503                  # OLD (prior on σ): 0.7788684130749829

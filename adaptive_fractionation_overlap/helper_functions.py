@@ -49,11 +49,16 @@ def std_calc(measured_data, alpha, beta):
     n = len(measured_data)
     std_values = np.arange(0.001, 10, 0.001)
     measured_variance = np.var(measured_data)
+    # OLD (Gamma prior on σ):
+    # likelihood_values = (
+    #     std_values ** (alpha - 1)
+    #     / std_values ** (n - 1)
+    #     * np.exp(-1 / beta * std_values)
+    #     * np.exp(-measured_variance / (2 * (std_values**2 / n)))
+    # )
     likelihood_values = (
-        std_values ** (alpha - 1)
-        / std_values ** (n - 1)
-        * np.exp(-1 / beta * std_values)
-        * np.exp(-measured_variance / (2 * (std_values**2 / n)))
+        std_values ** (-n - 2 * alpha)
+        * np.exp(-(n * measured_variance / 2 + 1 / beta) / std_values ** 2)
     )
     std = std_values[np.argmax(likelihood_values)]
     return std
