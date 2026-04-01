@@ -24,7 +24,7 @@ with a Student-t CDF-difference; _P_BELIEF would then require a corresponding up
 import numpy as np
 from scipy.stats import norm
 
-from .helper_functions import nearest_idx
+from .helper_functions import nearest_idx, welford_update
 
 
 # ---------------------------------------------------------------------------
@@ -99,8 +99,7 @@ def _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count
     _SIGMA_GRID, used to look up future values in the DP values array.
     Uses Welford's online algorithm to update the running mean and variance.
     """
-    mu_prime = (observation_count * mu + volume_space) / (observation_count + 1)  # new mean after observing each hypothetical overlap
-    sigma2_prime = (observation_count * sigma ** 2 + (volume_space - mu) * (volume_space - mu_prime)) / (observation_count + 1)  # new variance after observing each hypothetical overlap
+    mu_prime, sigma2_prime = welford_update(mu, sigma ** 2, observation_count, volume_space)
     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))  # new sigma, clamped to avoid zero with few observations
     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])          # clamp new mu to grid's range
     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])  # clamp new sigma to grid's range
@@ -154,10 +153,7 @@ def _bellman_expectation_full_grid(values_prev, observation_count):
     sigma_vals = _SIGMA_GRID[None, :, None]  # (1, N_sigma, 1)
     o_vals = _VOLUME_SPACE[None, None, :]    # (1, 1, N_overlap)
 
-    mu_prime = (observation_count * mu_vals + o_vals) / (observation_count + 1)  # new mean after observing each hypothetical overlap
-    delta = o_vals - mu_vals         # deviation of new observation from old mean
-    delta_prime = o_vals - mu_prime  # deviation of new observation from new mean (Welford variance term)
-    sigma2_prime = (observation_count * sigma_vals ** 2 + delta * delta_prime) / (observation_count + 1)  # new variance (Welford online update)
+    mu_prime, sigma2_prime = welford_update(mu_vals, sigma_vals ** 2, observation_count, o_vals)
     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))  # new std, floored at _SIGMA_MIN
     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])
     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])

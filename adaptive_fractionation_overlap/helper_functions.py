@@ -4,6 +4,8 @@ In this file are all helper functions that are needed for the adaptive fractiona
 """
 
 __all__ = [
+    "s2_calc",
+    "welford_update",
     "std_calc",
     "get_state_space",
     "probdist",
@@ -21,6 +23,24 @@ import matplotlib
 import matplotlib.pyplot as plt
 from .constants import SLOPE, INTERCEPT
 
+
+def s2_calc(measured_data):
+    """Return the empirical population variance S^2 of the observed overlaps."""
+    return float(np.var(measured_data))
+
+
+def welford_update(mean, variance, observation_count, new_observation):
+    """Apply a one-step Welford update to the running mean and population variance."""
+    mean = np.asarray(mean, dtype=float)
+    variance = np.asarray(variance, dtype=float)
+    new_observation = np.asarray(new_observation, dtype=float)
+
+    mean_next = (observation_count * mean + new_observation) / (observation_count + 1)
+    variance_next = (
+        observation_count * variance
+        + (new_observation - mean) * (new_observation - mean_next)
+    ) / (observation_count + 1)
+    return mean_next, np.maximum(variance_next, 0.0)
 
 
 def std_calc(measured_data, alpha, beta):
@@ -48,7 +68,7 @@ def std_calc(measured_data, alpha, beta):
     """
     n = len(measured_data)
     std_values = np.arange(0.001, 10, 0.001)
-    measured_variance = np.var(measured_data)
+    measured_variance = s2_calc(measured_data)
     likelihood_values = (
         std_values ** (alpha - 1)
         / std_values ** (n - 1)
