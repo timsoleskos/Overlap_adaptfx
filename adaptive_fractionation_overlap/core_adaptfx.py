@@ -150,7 +150,7 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
     remaining_fractions = number_of_fractions - fraction_index_today + 1  # includes the current fraction (not yet delivered)
 
     values  = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))  # V(s): DP Value Function over all future states
-    policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))  # π(s): optimal Dose Action for each future state
+    policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma), dtype=np.float32)  # π(s): optimal Dose Action for each future state
 
     base = dict(
         dose_space=dose_space, action_space=action_space, prescribed_dose=prescribed_dose,
@@ -226,7 +226,7 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             flat_index_base = (dose_broadcast_idx * N_mu * N_sigma + mu_broadcast_idx * N_sigma + sigma_broadcast_idx) * len(action_space)  # shape: (N_dose, N_mu, N_sigma)
 
             values_state  = np.empty((N_dose, N_overlap, N_mu, N_sigma))  # Value Function for this DP step; will be filled by the Numba kernel
-            policies_state = np.empty((N_dose, N_overlap, N_mu, N_sigma)) # Optimal Policy for this DP step; will be filled by the Numba kernel
+            policies_state = np.empty((N_dose, N_overlap, N_mu, N_sigma), dtype=np.float32) # Optimal Policy for this DP step; will be filled by the Numba kernel
 
             # For each (dose, overlap, belief) combination, find the action that maximises
             # total state value (future value minus immediate OAR cost), and record that value and action in values_state and policies_state.
@@ -255,7 +255,7 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             # dose decision is fully determined by the remaining dose, not the overlap belief.
             terminal_state_value = (-terminal_oar_penalty + underdose_penalty[:, None] + overdose_penalty[:, None])  # shape: (N_dose, N_overlap)
             values[i]   = terminal_state_value[:, :, None, None]                                           # broadcast over belief dimensions; shape: (N_dose, N_overlap, N_mu, N_sigma)
-            policies[i] = best_actions[:, None, None, None] * np.ones((N_dose, N_overlap, N_mu, N_sigma))  # same best action for every (overlap, belief) combination
+            policies[i, :, :, :, :] = best_actions[:, None, None, None]  # broadcast fill — avoids allocating a full float64 temporary
 
     return dict(**base, values=values, policies=policies, overlap_penalty=overlap_penalty, is_infeasible=False, fixed_dose=None)
 
