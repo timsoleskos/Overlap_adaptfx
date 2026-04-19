@@ -57,6 +57,12 @@ from .belief_model import (
 
 
 _INFEASIBILITY_SENTINEL = -1e12  # large negative value that marks infeasible DP states; all uses in this module must reference this constant
+# Per-Gy deficit coefficient added on top of the flat sentinel at the terminal fraction.
+# Chosen so that deficit magnitude (up to tens of Gy) changes the value by ~1e6-1e8 -
+# enough to tiebreak between multiple infeasible actions (smaller deficit wins) while
+# still orders of magnitude smaller than the flat sentinel, so feasible states always
+# dominate infeasible ones.
+_DEFICIT_PENALTY_COEF = 1e6
 
 
 def _set_infeasible_state(fixed_dose, values, N_overlap, remaining_fractions):
@@ -243,12 +249,27 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             # OAR penalty incurred at the terminal fraction for each (dose_state, overlap_bin) combination.
             terminal_oar_penalty = penalty_calc_single(best_actions[:, None], min_dose, _VOLUME_SPACE[None, :])  # shape: (N_dose, N_overlap)
 
-            # Apply _INFEASIBILITY_SENTINEL to dose states where the terminal fraction still leaves
-            # the patient underdosed or overdosed. np.round guards against floating-point noise near prescribed_dose.
-            underdose_penalty = np.zeros(future_accumulated_dose.shape)
-            overdose_penalty  = np.zeros(future_accumulated_dose.shape)
-            underdose_penalty[np.round(future_accumulated_dose, 2) < prescribed_dose] = _INFEASIBILITY_SENTINEL
-            overdose_penalty[np.round(future_accumulated_dose, 2) > prescribed_dose] = _INFEASIBILITY_SENTINEL
+            # Apply infeasibility penalty to dose states where the terminal fraction still leaves
+            # the patient underdosed or overdosed. The penalty is a flat _INFEASIBILITY_SENTINEL plus
+            # a deficit-scaled term: (prescribed - total) for underdose, (total - prescribed) for overdose.
+            # The deficit term lets the DP prefer "less infeasible" actions when every action at a given
+            # state is infeasible (e.g., accumulated dose so low at F4 that every d_F4 still underdoses):
+            # without it, the flat sentinel is equal across all actions and the tiebreaker falls through
+            # to the immediate OAR cost, which always prefers min_dose - even when max_dose would reduce
+            # the unavoidable underdose. np.round guards against floating-point noise near prescribed_dose.
+            rounded_total = np.round(future_accumulated_dose, 2)
+            underdose_mask = rounded_total < prescribed_dose
+            overdose_mask  = rounded_total > prescribed_dose
+            underdose_penalty = np.where(
+                underdose_mask,
+                _INFEASIBILITY_SENTINEL - _DEFICIT_PENALTY_COEF * (prescribed_dose - future_accumulated_dose),
+                0.0,
+            )
+            overdose_penalty = np.where(
+                overdose_mask,
+                _INFEASIBILITY_SENTINEL - _DEFICIT_PENALTY_COEF * (future_accumulated_dose - prescribed_dose),
+                0.0,
+            )
 
             # Terminal state value = immediate cost + feasibility penalties.
             # The value is independent of belief (mu, sigma) because at the terminal fraction the
