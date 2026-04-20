@@ -202,4 +202,4 @@ def current_belief_probdist(mu: float, sigma: float) -> np.ndarray:
         np.ndarray: probability of each overlap bin j; shape (N_overlap,).
     """
     from .helper_functions import probdist
-    return probdist((mu, sigma), _VOLUME_SPACE)
+    return probdist((mu, max(sigma, _SIGMA_MIN)), _VOLUME_SPACE)
