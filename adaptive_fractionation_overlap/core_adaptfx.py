@@ -28,6 +28,28 @@ def _linear_interp(x_values: np.ndarray, y_values: np.ndarray, query_points):
     return np.interp(query.ravel(), x_values, y_values).reshape(query.shape)
 
 def policy_calc(fixed_mean_volume: float, fixed_std: float, number_of_fractions: int = DEFAULT_NUMBER_OF_FRACTIONS, min_dose: float = DEFAULT_MIN_DOSE, max_dose: float = DEFAULT_MAX_DOSE, mean_dose:float = DEFAULT_MEAN_DOSE, dose_steps: float = DEFAULT_DOSE_STEPS):
+    """Compute policy curves for a fixed normal overlap-volume distribution.
+
+    This helper evaluates the dynamic program for a normal distribution defined
+    by ``fixed_mean_volume`` and ``fixed_std``. Unlike
+    ``adaptive_fractionation_core``, it does not condition on observed patient
+    volumes or accumulated dose; it is primarily useful for notebook-style
+    policy visualization.
+
+    Args:
+        fixed_mean_volume: Mean of the normal overlap-volume distribution.
+        fixed_std: Standard deviation of the normal overlap-volume distribution.
+        number_of_fractions: Total number of treatment fractions.
+        min_dose: Minimum deliverable dose per fraction.
+        max_dose: Maximum deliverable dose per fraction.
+        mean_dose: Mean dose target per fraction.
+        dose_steps: Dose grid spacing.
+
+    Returns:
+        A list containing future-fraction policies, policy values over overlap
+        volumes, the overlap-volume grid, value arrays, the accumulated-dose
+        grid, and overlap-volume probabilities.
+    """
     goal = number_of_fractions * mean_dose #dose to be reached
 
     distribution_params = (fixed_mean_volume, fixed_std)
@@ -241,10 +263,32 @@ def adaptfx_full(volumes: list, number_of_fractions: int = DEFAULT_NUMBER_OF_FRA
     accumulated_doses = np.zeros(number_of_fractions)
     for index, frac in enumerate(range(1,number_of_fractions +1)):
         if frac != number_of_fractions:
-            physical_dose = adaptive_fractionation_core(fraction = frac, volumes = np.array(volumes[:-number_of_fractions+frac]), accumulated_dose = accumulated_doses[index], number_of_fractions= number_of_fractions, min_dose = min_dose, max_dose = max_dose, mean_dose = mean_dose, dose_steps = dose_steps, alpha = alpha, beta = beta)[3]  # return index 3 is the recommended dose
+            physical_dose = adaptive_fractionation_core(
+                fraction=frac,
+                volumes=np.array(volumes[:-number_of_fractions + frac]),
+                accumulated_dose=accumulated_doses[index],
+                number_of_fractions=number_of_fractions,
+                min_dose=min_dose,
+                max_dose=max_dose,
+                mean_dose=mean_dose,
+                dose_steps=dose_steps,
+                alpha=alpha,
+                beta=beta,
+            )[3]
             accumulated_doses[index+1] = accumulated_doses[index] + physical_dose
         else:
-            physical_dose = adaptive_fractionation_core(fraction = frac, volumes = np.array(volumes),accumulated_dose = accumulated_doses[index], number_of_fractions= number_of_fractions, min_dose = min_dose, max_dose = max_dose, mean_dose = mean_dose, dose_steps = dose_steps, alpha = alpha, beta = beta)[3]  # final fraction uses full observed volume history
+            physical_dose = adaptive_fractionation_core(
+                fraction=frac,
+                volumes=np.array(volumes),
+                accumulated_dose=accumulated_doses[index],
+                number_of_fractions=number_of_fractions,
+                min_dose=min_dose,
+                max_dose=max_dose,
+                mean_dose=mean_dose,
+                dose_steps=dose_steps,
+                alpha=alpha,
+                beta=beta,
+            )[3]
         physical_doses[index] = physical_dose
     total_penalty = 0
     for index, dose in enumerate(physical_doses):
