@@ -6,21 +6,6 @@ This module contains global constants that are used across different modules
 in the adaptive fractionation calculations.
 """
 
-__all__ = [
-    "SLOPE",
-    "INTERCEPT",
-    "DEFAULT_MIN_DOSE",
-    "DEFAULT_MAX_DOSE",
-    "DEFAULT_MEAN_DOSE",
-    "DEFAULT_DOSE_STEPS",
-    "DEFAULT_NUMBER_OF_FRACTIONS",
-    "DEFAULT_ALPHA",
-    "DEFAULT_BETA",
-    "INFEASIBLE_VALUE",
-    "OVERDOSE_STATE_OFFSET",
-    "DOSE_GRID_EPSILON",
-]
-
 # Default penalty function parameters
 SLOPE = -0.65
 INTERCEPT = 0.0
