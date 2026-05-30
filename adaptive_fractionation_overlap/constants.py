@@ -16,6 +16,9 @@ __all__ = [
     "DEFAULT_NUMBER_OF_FRACTIONS",
     "DEFAULT_ALPHA",
     "DEFAULT_BETA",
+    "INFEASIBLE_VALUE",
+    "OVERDOSE_STATE_OFFSET",
+    "DOSE_GRID_EPSILON",
 ]
 
 # Default penalty function parameters
@@ -32,3 +35,8 @@ DEFAULT_NUMBER_OF_FRACTIONS = 5
 # Gamma distribution parameters
 DEFAULT_ALPHA = 1.072846744379587
 DEFAULT_BETA = 0.7788684130749829
+
+# Dynamic programming sentinel values
+INFEASIBLE_VALUE = -1_000_000_000_000.0
+OVERDOSE_STATE_OFFSET = 0.05
+DOSE_GRID_EPSILON = 0.01
