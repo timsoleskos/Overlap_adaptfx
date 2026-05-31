@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.stats import norm
 
-from .constants import SLOPE, INTERCEPT, INFEASIBLE_VALUE
+from .constants import SLOPE, INTERCEPT
 
 _STD_VALUES = np.arange(0.001, 10, 0.001)
 _STD_VALUES_SQUARED = _STD_VALUES**2
@@ -236,10 +236,10 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
         matplotlib.fig: returns a figure with all values plotted as subfigures
     """
     values = values.copy()
-    infeasible_values = values <= INFEASIBLE_VALUE
-    values[infeasible_values] = abs(INFEASIBLE_VALUE)
+    plot_infeasible_value = 1e10
+    values[values < -plot_infeasible_value] = plot_infeasible_value
     min_value = np.min(values)
-    values[infeasible_values] = 1.1*min_value
+    values[values == plot_infeasible_value] = 1.1 * min_value
     colormap = matplotlib.colormaps['jet']
     number_of_plots = number_of_fractions - fraction
     fig, axs = plt.subplots(1,number_of_plots, figsize = (number_of_plots*10,10))
