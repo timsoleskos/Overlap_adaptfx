@@ -34,7 +34,10 @@ from .constants import (
     DEFAULT_DOSE_STEPS,
     DEFAULT_NUMBER_OF_FRACTIONS,
     DEFAULT_ALPHA,
-    DEFAULT_BETA
+    DEFAULT_BETA,
+    INFEASIBLE_VALUE,
+    COHORT_MAX_OVERLAP_CC,
+    PRECOMPUTE_SCAN_STEP_CC,
 )
 
 from .helper_functions import (
@@ -56,7 +59,7 @@ from .belief_model import (
 )
 
 
-_INFEASIBILITY_SENTINEL = -1e12  # large negative value that marks infeasible DP states; all uses in this module must reference this constant
+_INFEASIBILITY_SENTINEL = INFEASIBLE_VALUE  # large negative value that marks infeasible DP states; all uses in this module must reference this constant
 # Per-Gy deficit coefficient added on top of the flat sentinel at the terminal fraction.
 # Chosen so that deficit magnitude (up to tens of Gy) changes the value by ~1e6-1e8 -
 # enough to tiebreak between multiple infeasible actions (smaller deficit wins) while
@@ -510,7 +513,7 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
     # Minimum clinically relevant scan range: 6.5 cc covers the 99th percentile of the observed
     # 58-patient cohort overlap distribution, ensuring the table always spans a useful range even
     # when the patient's current belief is very narrow (e.g. only 1 observation so far).
-    distribution_max = 6.5 if volume_space.max() < 6.5 else volume_space.max()
+    distribution_max = COHORT_MAX_OVERLAP_CC if volume_space.max() < COHORT_MAX_OVERLAP_CC else volume_space.max()
     min_dose_deliverable = min_dose_to_deliver(accumulated_dose=accumulated_dose, fractions_left=number_of_fractions - fraction_index_today + 1, prescribed_dose=mean_dose * number_of_fractions, min_dose=min_dose, max_dose=max_dose)
 
     # Run the DP backward sweep once — it is independent of which overlap will be observed
@@ -520,7 +523,7 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
     # Scan always starts at 0.0 cc, regardless of the patient's observed overlap history.
     # This ensures the table is complete for any overlap that could be observed at the next fraction,
     # including very small values that fall far below the patient's current belief mean.
-    volumes_to_check = [0.0]  # start from 0 cc and grow in 0.1 cc increments until we meet stop criteria
+    volumes_to_check = [0.0]  # start from 0 cc and grow in PRECOMPUTE_SCAN_STEP_CC increments until we meet stop criteria
     predicted_policies = []
 
     while True:
@@ -538,7 +541,7 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
         if covered_distribution_range and reached_minimum_policy:
             break
 
-        volumes_to_check.append(np.round(volume + 0.1, 10))  # avoid float drift from repeated +0.1 operations
+        volumes_to_check.append(np.round(volume + PRECOMPUTE_SCAN_STEP_CC, 10))  # avoid float drift from repeated additions
 
     volumes_to_check = np.asarray(volumes_to_check)
     predicted_policies = np.asarray(predicted_policies)

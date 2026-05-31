@@ -660,7 +660,6 @@ class TestCoreAdaptfxGoldenRegression:
         np.testing.assert_allclose(actual_penalties_added, expected_penalties_added, atol=1e-12)
         np.testing.assert_allclose(actual_final_penalties, expected_final_penalties, atol=1e-12)
 
-
 # Performance and edge case tests
 @pytest.mark.unit
 class TestCoreAdaptfxEdgeCases:
