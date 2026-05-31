@@ -325,9 +325,9 @@ def precompute_plan(fraction: int, volumes: np.ndarray, accumulated_dose: float,
     std = std_calc(volumes, alpha, beta)
     distribution_params = (volumes.mean(), std)
     volume_space = get_state_space(distribution_params)
-    distribution_max = 6.5 if volume_space.max() < 6.5 else volume_space.max()
+    distribution_max = COHORT_MAX_OVERLAP_CC if volume_space.max() < COHORT_MAX_OVERLAP_CC else volume_space.max()
     min_dose_deliverable = min_dose_to_deliver(accumulated_dose=accumulated_dose,fractions_left = number_of_fractions - fraction + 1, prescribed_dose = mean_dose*number_of_fractions, min_dose = min_dose, max_dose = max_dose)
-    volumes_to_check = [0.0]  # start from 0 cc and grow in 0.1 cc increments until we meet stop criteria
+    volumes_to_check = [0.0]  # start from 0 cc and grow in PRECOMPUTE_SCAN_STEP_CC increments until we meet stop criteria
     predicted_policies = []
     volumes_with_candidate = np.empty(volumes.size + 1, dtype=float)  # reuse one buffer to avoid reallocating arrays on every loop iteration
     volumes_with_candidate[:-1] = volumes  # keep all observed volumes fixed and update only the candidate last element
@@ -354,7 +354,7 @@ def precompute_plan(fraction: int, volumes: np.ndarray, accumulated_dose: float,
         if covered_distribution_range and reached_minimum_policy:
             break
 
-        volumes_to_check.append(np.round(volume + 0.1, 10))  # avoid float drift from repeated +0.1 operations
+        volumes_to_check.append(np.round(volume + PRECOMPUTE_SCAN_STEP_CC, 10))  # avoid float drift from repeated additions
 
     volumes_to_check = np.asarray(volumes_to_check)
     predicted_policies = np.asarray(predicted_policies)
