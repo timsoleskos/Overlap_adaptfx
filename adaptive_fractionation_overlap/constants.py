@@ -26,10 +26,5 @@ INFEASIBLE_VALUE = -1_000_000_000_000.0
 OVERDOSE_STATE_OFFSET = 0.05
 DOSE_GRID_EPSILON = 0.01
 
-# precompute_plan scan parameters
-# Minimum upper bound (cc) for the precompute volume scan. 6.5 cc covers the 99th
-# percentile of the 58-patient cohort overlap distribution, so the table always
-# spans a clinically relevant range even when the current belief is very narrow.
-COHORT_MAX_OVERLAP_CC = 6.5
-# Step size (cc) between successive candidate overlap volumes in the precompute scan.
+COHORT_MAX_OVERLAP_CC = 6.5  # 99th percentile overlap in the 58-patient cohort
 PRECOMPUTE_SCAN_STEP_CC = 0.1
