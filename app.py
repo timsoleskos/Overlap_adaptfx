@@ -10,14 +10,13 @@ from adaptive_fractionation_overlap.constants import (
     DEFAULT_MIN_DOSE, 
     DEFAULT_MAX_DOSE, 
     DEFAULT_MEAN_DOSE,
-    DEFAULT_DOSE_STEPS, 
+    DEFAULT_DOSE_STEPS,
     DEFAULT_NUMBER_OF_FRACTIONS,
     DEFAULT_ALPHA,
-    DEFAULT_BETA
+    DEFAULT_BETA,
+    INFEASIBLE_VALUE,
 )
 from adaptive_fractionation_overlap.helper_functions import std_calc, build_dose_decision_lines
-
-_INFEASIBLE_SENTINEL = -100000000000
 
 st.set_page_config(layout="wide")
 st.title('Overlap Adaptive Fractionation Interface')
@@ -118,10 +117,10 @@ if st.button('compute optimal dose', help = 'takes the given inputs from above t
         [policies, policies_overlap, volume_space, physical_dose, penalty_added, values, dose_space, probabilities, final_penalty] = af.adaptive_fractionation_core(fraction = int(actual_fraction),volumes = np.array(overlaps), accumulated_dose = float(accumulated_dose), number_of_fractions = int(fractions), min_dose = float(minimum_dose), max_dose = float(maximum_dose), mean_dose = float(mean_dose), dose_steps = float(dose_steps))
         left2, right2 = st.columns(2)
         with left2:
-            actual_value = 'Goal can not be reached' if final_penalty <= _INFEASIBLE_SENTINEL else str(np.round(final_penalty,1)) + 'ccGy'
+            actual_value = 'Goal can not be reached' if final_penalty <= INFEASIBLE_VALUE else str(np.round(final_penalty,1)) + 'ccGy'
             st.metric(label="optimal dose for actual fraction", value= str(physical_dose) + 'Gy', delta = (physical_dose - float(mean_dose)))
             st.metric(label="expected final penalty from this fraction", value = actual_value)
-            if final_penalty <= _INFEASIBLE_SENTINEL:
+            if final_penalty <= INFEASIBLE_VALUE:
                 st.write('the minimal dose is delivered if we overdose, the maximal dose is delivered if we underdose')
                 st.markdown('by taking this approach and delivering the minimum/maximum dose in each fraction we miss the goal by:')
                 st.metric(label= '', value = str(float(accumulated_dose) + float(physical_dose)*(int(fractions) - int(actual_fraction) + 1) - float(mean_dose) * int(fractions)))
