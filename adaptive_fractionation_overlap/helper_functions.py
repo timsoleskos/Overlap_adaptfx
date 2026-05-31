@@ -16,13 +16,21 @@ __all__ = [
     "build_dose_decision_lines",
 ]
 
-import numpy as np
-from scipy.stats import norm
+from functools import lru_cache
+
 import matplotlib
 import matplotlib.pyplot as plt
-from .constants import SLOPE, INTERCEPT
+import numpy as np
+from scipy.stats import norm
 
+from .constants import SLOPE, INTERCEPT, INFEASIBLE_VALUE
 
+_STD_VALUES = np.arange(0.001, 10, 0.001)
+_STD_VALUES_SQUARED = _STD_VALUES**2
+
+@lru_cache(maxsize=64)
+def _std_prior_term(alpha, beta, n):
+    return _STD_VALUES ** (alpha - n) * np.exp(-_STD_VALUES / beta)
 
 def std_calc(measured_data, alpha, beta):
     """
@@ -45,18 +53,12 @@ def std_calc(measured_data, alpha, beta):
 
     """
     n = len(measured_data)
-    std_values = np.arange(0.001, 10, 0.001)
     measured_variance = np.var(measured_data)
-    likelihood_values = (
-        std_values ** (alpha - 1)
-        / std_values ** (n - 1)
-        * np.exp(-1 / beta * std_values)
-        * np.exp(-measured_variance / (2 * (std_values**2 / n)))
+    likelihood_values = _std_prior_term(alpha, beta, n) * np.exp(
+        -measured_variance / (2 * (_STD_VALUES_SQUARED / n))
     )
-    std = std_values[np.argmax(likelihood_values)]
+    std = _STD_VALUES[np.argmax(likelihood_values)]
     return std
-
-
 
 def get_state_space(distribution):
     """
@@ -234,9 +236,10 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
         matplotlib.fig: returns a figure with all values plotted as subfigures
     """
     values = values.copy()
-    values[values < -10000000000] = 10000000000
-    min_Value = np.min(values)
-    values[values == 10000000000] = 1.1*min_Value
+    infeasible_values = values <= INFEASIBLE_VALUE
+    values[infeasible_values] = abs(INFEASIBLE_VALUE)
+    min_value = np.min(values)
+    values[infeasible_values] = 1.1*min_value
     colormap = matplotlib.colormaps['jet']
     number_of_plots = number_of_fractions - fraction
     fig, axs = plt.subplots(1,number_of_plots, figsize = (number_of_plots*10,10))

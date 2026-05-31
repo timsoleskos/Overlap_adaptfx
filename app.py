@@ -133,7 +133,7 @@ if st.button('compute optimal dose', help = 'takes the given inputs from above t
                 st.pyplot(figure)
                 st.write('The figures above show the value function for each future fraction. These functions help to identify whether a potential mistake has been made in the calculation.')
     elif function == 'precompute plan':
-        with st.spinner('computing plans. This might take up to 2-3 minutes'):
+        with st.spinner('computing plans...'):
             volume_x_dose, volumes_to_check, predicted_policies = af.precompute_plan(fraction = int(actual_fraction), volumes = np.array(overlaps), accumulated_dose = float(accumulated_dose), number_of_fractions = int(fractions), min_dose = float(minimum_dose), max_dose = float(maximum_dose), mean_dose = float(mean_dose), dose_steps = float(dose_steps))
         csv = convert_df(volume_x_dose)
         input_summary = build_input_summary(

@@ -255,14 +255,14 @@ def assert_valid_dose_plan(physical_doses, accumulated_doses, target_dose=None, 
     # Check accumulated doses are increasing
     assert_increasing(accumulated_doses)
     
-    # Check accumulated doses are cumulative sums
-    expected_accumulated = np.cumsum(physical_doses)
+    # Check accumulated doses are pre-fraction cumulative sums
+    expected_accumulated = np.concatenate([[0.0], np.cumsum(physical_doses[:-1])])
     assert np.allclose(accumulated_doses, expected_accumulated, atol=1e-10), \
-        "Accumulated doses should be cumulative sum of physical doses"
+        "Accumulated doses should follow algorithm pattern: [0, cumsum(doses[:-1])]"
     
     # Check final dose is reasonable
     if target_dose is not None:
-        final_dose = accumulated_doses[-1]
+        final_dose = accumulated_doses[-1] + physical_doses[-1]
         assert abs(final_dose - target_dose) < tolerance, \
             f"Final dose {final_dose:.1f} should be within {tolerance} Gy of target {target_dose}"
 
