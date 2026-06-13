@@ -679,7 +679,6 @@ class TestCoreAdaptfxGoldenRegression:
         )
         np.testing.assert_allclose(transitions, expected_transitions, atol=1e-12)
 
-
 # Performance and edge case tests
 @pytest.mark.unit
 class TestCoreAdaptfxEdgeCases:
@@ -740,7 +739,6 @@ class TestCoreAdaptfxEdgeCases:
         assert physical_dose == 10.0, "Dose should be maximum dose" 
 
 
-@pytest.mark.slow
 class TestCoreAdaptfxPerformance:
     """Performance tests for core functions."""
     
