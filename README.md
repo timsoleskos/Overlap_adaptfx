@@ -27,7 +27,22 @@ pip install -e .
 
 ## Quick Start
 
-Check the `evaluation/Evaluation.ipynb` notebook for a comprehensive example of using the package with clinical data.
+After installing the package, run the test suite or launch the Streamlit app to verify the local checkout:
+
+```bash
+pytest tests/
+streamlit run app.py
+```
+
+## Evaluation and Benchmarking
+
+This repository is kept focused on the installable package, the Streamlit app, and package tests.
+
+Notebook-based clinical evaluation, benchmark runners, variant comparisons, generated reports, and research utilities live in the private companion workbench repository:
+
+```text
+timsoleskos/Overlap_adaptfx_workbench
+```
 
 ## Running the Streamlit App
 
@@ -84,10 +99,6 @@ tests/
 ├── test_helper_functions.py   # Mathematical function tests  
 ├── test_core_adaptfx.py       # Core algorithm tests
 ├── test_fixtures.py           # Test infrastructure validation
-
-evaluation/
-├── Evaluation.ipynb           # Analysis notebooks
-└── ACTION_patients_overlap_only.xlsx  # Clinical dataset
 
 .github/workflows/
 ├── tests.yml                  # Comprehensive CI/CD pipeline
