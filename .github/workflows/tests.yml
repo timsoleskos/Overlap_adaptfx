@@ -34,6 +34,30 @@ jobs:
             pyproject.toml
             requirements.txt
 
+      - name: Reject tracked Python build artifacts
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import PurePosixPath
+          import subprocess
+
+          tracked = subprocess.check_output(
+              ["git", "ls-files"],
+              text=True,
+          ).splitlines()
+          forbidden_suffixes = {".pyc", ".pyo", ".pyd", ".nbc", ".nbi"}
+          artifacts = [
+              path
+              for path in tracked
+              if "__pycache__" in PurePosixPath(path).parts
+              or PurePosixPath(path).suffix in forbidden_suffixes
+          ]
+          if artifacts:
+              raise SystemExit(
+                  "Tracked Python build artifacts:\n" + "\n".join(artifacts)
+              )
+          PY
+
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip

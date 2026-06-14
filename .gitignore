@@ -6,6 +6,14 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+*.py[cod]
+*.nbc
+*.nbi
+.venv-wsl/
+.claude/
+.codex
+outputs/
+evaluation/outputs/
 .tox/
 .venv/
 .env
