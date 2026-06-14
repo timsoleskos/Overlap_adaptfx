@@ -11,10 +11,11 @@ precompute_plan             : pre-tabulates dose recommendations for every possi
 Algorithm
 ---------
 At each treatment fraction the solver runs backward-induction dynamic programming over a
-5D state space: (accumulated_dose, overlap_volume, belief_mu, belief_sigma, fraction).
-The belief (mu, sigma) tracks a running Gaussian estimate of the patient's overlap
-distribution; it is updated after each observed overlap via Welford's online algorithm.
-The belief grids, branch probabilities, and Bellman operators live in belief_model.py.
+5D state space: (accumulated_dose, overlap_volume, belief_mu, belief_S^2, fraction).
+The belief state tracks a running Gaussian estimate of the patient's overlap
+distribution using mean mu and empirical variance S^2. Predictive sigma is derived
+from (n, S^2) via the same MAP rule used by std_calc. The belief grids, branch
+probabilities, and Bellman operators live in belief_model.py.
 """
 
 __all__ = [  # limits what `from core_adaptfx import *` exposes
@@ -41,7 +42,9 @@ from .constants import (
 )
 
 from .helper_functions import (
+    s2_calc,
     std_calc,
+    sigma_map_from_variance,
     get_state_space,
     penalty_calc_single,
     penalty_calc_matrix,
@@ -51,7 +54,7 @@ from .helper_functions import (
 
 from .belief_model import (
     _MU_GRID,
-    _SIGMA_GRID,
+    _S2_GRID,
     _VOLUME_SPACE,
     _bellman_expectation,
     _bellman_expectation_full_grid,
@@ -111,7 +114,7 @@ def _fill_values_policies(future_values_masked_action_last, overlap_penalty, fla
                     policies_state[d, j, m, s] = action_space[ai[d, m, s]]                           # record the corresponding optimal dose action
 
 
-def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps):
+def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps, alpha, beta):
     """Build dose/action grids and run the DP backward sweep for all future fractions.
 
     Computes everything that is independent of the overlap actually observed at
@@ -123,7 +126,7 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
     backward sweep once and then call _resolve_current_fraction once per candidate.
 
     Returns a dict with keys:
-        values           (remaining_fractions-1, N_dose, N_overlap, N_mu, N_sigma)
+        values           (remaining_fractions-1, N_dose, N_overlap, N_mu, N_s2)
         policies         same shape
         dose_space       (N_dose,)
         action_space     (N_action,)
@@ -151,15 +154,15 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
     )
 
     N_mu = len(_MU_GRID)
-    N_sigma = len(_SIGMA_GRID)
+    N_s2 = len(_S2_GRID)
     N_overlap = len(_VOLUME_SPACE)
     N_dose = len(dose_space)
 
     remaining_ptv_dose = prescribed_dose - accumulated_dose
     remaining_fractions = number_of_fractions - fraction_index_today + 1  # includes the current fraction (not yet delivered)
 
-    values  = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))  # V(s): DP Value Function over all future states
-    policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma), dtype=np.float32)  # π(s): optimal Dose Action for each future state
+    values  = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_s2))  # V(s): DP Value Function over all future states
+    policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_s2), dtype=np.float32)  # π(s): optimal Dose Action for each future state
 
     base = dict(
         dose_space=dose_space, action_space=action_space, prescribed_dose=prescribed_dose,
@@ -189,14 +192,15 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
 
         if i != 0:  # not the terminal fraction — run full DP update
 
-            # ----- Bellman expectation over all (belief_mu, belief_sigma) grid points -----
+            # ----- Bellman expectation over all (belief_mu, belief_S^2) grid points -----
             # For each belief, computes the probability-weighted sum of next-state values across all possible overlap outcomes.
-            # For every (belief_mu, belief_sigma, overlap_bin) triple:
-            #   1. Apply Welford update to get the next belief,
-            #   2. Snap it to the nearest grid point,
-            #   3. Accumulate probability-weighted future values.
+            # For every (belief_mu, belief_S^2, overlap_bin) triple:
+            #   1. Convert current S^2 to sigma_MAP(n, S^2) to obtain branch probabilities,
+            #   2. Apply Welford update to get the next belief,
+            #   3. Snap it to the nearest grid point,
+            #   4. Accumulate probability-weighted future values.
             # Result: expected future value for each (accumulated_dose, belief) pair.
-            future_value_prob_full = _bellman_expectation_full_grid(values[i - 1], observation_count)  # shape: (N_dose, N_mu, N_sigma)
+            future_value_prob_full = _bellman_expectation_full_grid(values[i - 1], observation_count, alpha, beta)  # shape: (N_dose, N_mu, N_s2)
 
             # ----- Compute valid_actions mask -----
             # Includes clipping the action space to prevent overshooting prescribed dose.
@@ -212,30 +216,30 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             future_doses = dose_space[:, None] + action_space[None, :]  # total accumulated dose that would result from taking each action at each dose state; shape: (N_dose, N_action)
             query_doses = future_doses.ravel()  # flatten to 1D: one query dose per (dose_state, action) pair; shape: (N_dose * N_action,)
             dose_indices = np.clip(np.searchsorted(dose_space, np.round(query_doses, decimals=10), side='left'), 0, N_dose - 1)  # index of the matching dose_space grid point for each query dose
-            future_values_full = future_value_prob_full[dose_indices].reshape(N_dose, len(action_space), N_mu, N_sigma)  # look up the value of the next state reached by each (dose_state, action) pair, across all belief grid points; shape: (N_dose, N_action, N_mu, N_sigma)
+            future_values_full = future_value_prob_full[dose_indices].reshape(N_dose, len(action_space), N_mu, N_s2)  # look up the value of the next state reached by each (dose_state, action) pair, across all belief grid points; shape: (N_dose, N_action, N_mu, N_s2)
 
             # ----- Value & Policy update -----
             # Mask out invalid actions by setting the value of the state they lead to as min_float (a very large
             # negative number), so the Numba kernel never selects an overdosing action as the optimal policy.
-            future_values_masked = np.where(valid_actions[:, :, None, None], future_values_full, min_float)  # shape: (N_dose, N_action, N_mu, N_sigma)
+            future_values_masked = np.where(valid_actions[:, :, None, None], future_values_full, min_float)  # shape: (N_dose, N_action, N_mu, N_s2)
 
-            # Transpose to (N_dose, N_mu, N_sigma, N_action) so the action axis is last — this makes the
+            # Transpose to (N_dose, N_mu, N_s2, N_action) so the action axis is last — this makes the
             # argmax inside the Numba kernel scan a contiguous memory region, which is cache-friendly (~18% faster).
-            future_values_masked_action_last = future_values_masked.transpose(0, 2, 3, 1).copy()  # shape: (N_dose, N_mu, N_sigma, N_action), contiguous
+            future_values_masked_action_last = future_values_masked.transpose(0, 2, 3, 1).copy()  # shape: (N_dose, N_mu, N_s2, N_action), contiguous
 
-            # Precompute flat_index_base: for each (dose, mu, sigma) triple, the flat index in the ravelled
+            # Precompute flat_index_base: for each (dose, mu, S^2) triple, the flat index in the ravelled
             # future_values_masked_action_last where that triple's action entries begin.
-            # Layout is (N_dose, N_mu, N_sigma, N_action), so the flat position of element [d, m, s, a] is:
-            #   (d * N_mu * N_sigma  +  m * N_sigma  +  s) * N_action  +  a
+            # Layout is (N_dose, N_mu, N_s2, N_action), so the flat position of element [d, m, s, a] is:
+            #   (d * N_mu * N_s2  +  m * N_s2  +  s) * N_action  +  a
             # flat_index_base stores the part before '+ a', so the kernel only needs to add ai[d,m,s] at
             # lookup time — avoiding a take_along_axis call and its temporary allocations.
-            dose_broadcast_idx  = np.arange(N_dose)[:, None, None]  # shape (N_dose, 1, 1): broadcasts over the (N_dose, N_mu, N_sigma) output
-            mu_broadcast_idx    = np.arange(N_mu)[None, :, None]    # shape (1, N_mu, 1):   broadcasts over the (N_dose, N_mu, N_sigma) output
-            sigma_broadcast_idx = np.arange(N_sigma)[None, None, :] # shape (1, 1, N_sigma): broadcasts over the (N_dose, N_mu, N_sigma) output
-            flat_index_base = (dose_broadcast_idx * N_mu * N_sigma + mu_broadcast_idx * N_sigma + sigma_broadcast_idx) * len(action_space)  # shape: (N_dose, N_mu, N_sigma)
+            dose_broadcast_idx = np.arange(N_dose)[:, None, None]  # shape (N_dose, 1, 1): broadcasts over the belief grid
+            mu_broadcast_idx   = np.arange(N_mu)[None, :, None]    # shape (1, N_mu, 1): broadcasts over dose and S^2
+            s2_broadcast_idx   = np.arange(N_s2)[None, None, :]    # shape (1, 1, N_s2): broadcasts over dose and mu
+            flat_index_base = (dose_broadcast_idx * N_mu * N_s2 + mu_broadcast_idx * N_s2 + s2_broadcast_idx) * len(action_space)  # shape: (N_dose, N_mu, N_s2)
 
-            values_state  = np.empty((N_dose, N_overlap, N_mu, N_sigma))  # Value Function for this DP step; will be filled by the Numba kernel
-            policies_state = np.empty((N_dose, N_overlap, N_mu, N_sigma), dtype=np.float32) # Optimal Policy for this DP step; will be filled by the Numba kernel
+            values_state  = np.empty((N_dose, N_overlap, N_mu, N_s2))  # Value Function for this DP step; will be filled by the Numba kernel
+            policies_state = np.empty((N_dose, N_overlap, N_mu, N_s2), dtype=np.float32) # Optimal Policy for this DP step; will be filled by the Numba kernel
 
             # For each (dose, overlap, belief) combination, find the action that maximises
             # total state value (future value minus immediate OAR cost), and record that value and action in values_state and policies_state.
@@ -275,10 +279,10 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             )
 
             # Terminal state value = immediate cost + feasibility penalties.
-            # The value is independent of belief (mu, sigma) because at the terminal fraction the
+            # The value is independent of belief (mu, S^2) because at the terminal fraction the
             # dose decision is fully determined by the remaining dose, not the overlap belief.
             terminal_state_value = (-terminal_oar_penalty + underdose_penalty[:, None] + overdose_penalty[:, None])  # shape: (N_dose, N_overlap)
-            values[i]   = terminal_state_value[:, :, None, None]                                           # broadcast over belief dimensions; shape: (N_dose, N_overlap, N_mu, N_sigma)
+            values[i]   = terminal_state_value[:, :, None, None]                                           # broadcast over belief dimensions; shape: (N_dose, N_overlap, N_mu, N_s2)
             policies[i, :, :, :, :] = best_actions[:, None, None, None]  # broadcast fill — avoids allocating a full float64 temporary
 
     return dict(**base, values=values, policies=policies, overlap_penalty=overlap_penalty, is_infeasible=False, fixed_dose=None)
@@ -327,7 +331,8 @@ def _resolve_current_fraction(ctx, fraction_index_today, number_of_fractions, ob
     # Current belief: Welford estimate from all volumes including today's observation
     all_volumes = np.append(prior_volumes, observed_overlap)
     initial_belief_mu = all_volumes.mean()
-    initial_belief_sigma = std_calc(all_volumes, alpha, beta)
+    initial_belief_s2 = s2_calc(all_volumes)
+    initial_belief_sigma = sigma_map_from_variance(initial_belief_s2, len(all_volumes), alpha, beta)
     current_overlap_probs = current_belief_probdist(initial_belief_mu, initial_belief_sigma)
 
     observation_count = fraction_index_today  # observations accumulated at this fraction (including today's)
@@ -340,7 +345,7 @@ def _resolve_current_fraction(ctx, fraction_index_today, number_of_fractions, ob
 
     # Expected future state value under the current belief — uses values[-1] (next fraction's value table,
     # i.e. the last entry of the backward sweep which covers fraction_index_today+1).
-    future_value_prob = _bellman_expectation(values[-1], _VOLUME_SPACE, current_overlap_probs, initial_belief_mu, initial_belief_sigma, observation_count)
+    future_value_prob = _bellman_expectation(values[-1], _VOLUME_SPACE, current_overlap_probs, initial_belief_mu, initial_belief_s2, observation_count)
 
     if fraction_index_today == 1:  # first fraction: dose_space starts at min_dose, so actions map directly onto grid
         # Immediate OAR cost for each action at today's actually observed overlap.
@@ -438,7 +443,7 @@ def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, 
     volumes = np.asarray(volumes, dtype=float)
     observed_overlap = volumes[-1]
 
-    ctx = _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps)
+    ctx = _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps, alpha, beta)
     recommended_dose, actual_value, current_fraction_policy, current_overlap_probs = _resolve_current_fraction(
         ctx, fraction_index_today, number_of_fractions, observed_overlap, volumes[:-1], alpha, beta
     )
@@ -518,7 +523,7 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
 
     # Run the DP backward sweep once — it is independent of which overlap will be observed
     # at fraction_index_today, so the result is shared across all candidate overlap values.
-    ctx = _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps)
+    ctx = _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps, alpha, beta)
 
     # Scan always starts at 0.0 cc, regardless of the patient's observed overlap history.
     # This ensures the table is complete for any overlap that could be observed at the next fraction,
