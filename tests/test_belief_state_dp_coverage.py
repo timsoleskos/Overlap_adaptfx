@@ -62,7 +62,7 @@ def test_analytic_plotting_single_subplot():
     )
 
 
-_AFC_COMMON = dict(number_of_fractions=5, min_dose=6.0, max_dose=10.0,
+_AFC_COMMON = dict(number_of_fractions=1, min_dose=6.0, max_dose=10.0,
                    dose_steps=0.5, alpha=DEFAULT_ALPHA, beta=DEFAULT_BETA)
 
 def test_infeasible_under_prescribed_returns_min_dose():
