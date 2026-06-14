@@ -34,7 +34,10 @@ from .constants import (
     DEFAULT_DOSE_STEPS,
     DEFAULT_NUMBER_OF_FRACTIONS,
     DEFAULT_ALPHA,
-    DEFAULT_BETA
+    DEFAULT_BETA,
+    INFEASIBLE_VALUE,
+    COHORT_MAX_OVERLAP_CC,
+    PRECOMPUTE_SCAN_STEP_CC,
 )
 
 from .helper_functions import (
@@ -56,7 +59,13 @@ from .belief_model import (
 )
 
 
-_INFEASIBILITY_SENTINEL = -1e12  # large negative value that marks infeasible DP states; all uses in this module must reference this constant
+_INFEASIBILITY_SENTINEL = INFEASIBLE_VALUE  # large negative value that marks infeasible DP states; all uses in this module must reference this constant
+# Per-Gy deficit coefficient added on top of the flat sentinel at the terminal fraction.
+# Chosen so that deficit magnitude (up to tens of Gy) changes the value by ~1e6-1e8 -
+# enough to tiebreak between multiple infeasible actions (smaller deficit wins) while
+# still orders of magnitude smaller than the flat sentinel, so feasible states always
+# dominate infeasible ones.
+_DEFICIT_PENALTY_COEF = 1e6
 
 
 def _set_infeasible_state(fixed_dose, values, N_overlap, remaining_fractions):
@@ -134,7 +143,8 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
     # Verify that every action_space value lies exactly on the dose_space grid (same step size and alignment).
     # This is required for the direct index lookup in the DP loop to be correct — if this fails, the lookup
     # would silently return values from the wrong grid point instead of raising an error.
-    assert np.allclose(np.mod(action_space - dose_space[0], dose_steps), 0, atol=1e-9), (
+    _fracs = (action_space - dose_space[0]) / dose_steps
+    assert np.allclose(_fracs, np.round(_fracs), atol=1e-6), (
         "action_space values must all lie on the dose_space grid; "
         "direct index lookup requires that action_space and dose_space share the same step size and alignment. "
         f"dose_steps={dose_steps}, dose_space[0]={dose_space[0]}, action_space[0]={action_space[0]}"
@@ -149,7 +159,7 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
     remaining_fractions = number_of_fractions - fraction_index_today + 1  # includes the current fraction (not yet delivered)
 
     values  = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))  # V(s): DP Value Function over all future states
-    policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma))  # π(s): optimal Dose Action for each future state
+    policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_sigma), dtype=np.float32)  # π(s): optimal Dose Action for each future state
 
     base = dict(
         dose_space=dose_space, action_space=action_space, prescribed_dose=prescribed_dose,
@@ -225,7 +235,7 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             flat_index_base = (dose_broadcast_idx * N_mu * N_sigma + mu_broadcast_idx * N_sigma + sigma_broadcast_idx) * len(action_space)  # shape: (N_dose, N_mu, N_sigma)
 
             values_state  = np.empty((N_dose, N_overlap, N_mu, N_sigma))  # Value Function for this DP step; will be filled by the Numba kernel
-            policies_state = np.empty((N_dose, N_overlap, N_mu, N_sigma)) # Optimal Policy for this DP step; will be filled by the Numba kernel
+            policies_state = np.empty((N_dose, N_overlap, N_mu, N_sigma), dtype=np.float32) # Optimal Policy for this DP step; will be filled by the Numba kernel
 
             # For each (dose, overlap, belief) combination, find the action that maximises
             # total state value (future value minus immediate OAR cost), and record that value and action in values_state and policies_state.
@@ -242,19 +252,34 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             # OAR penalty incurred at the terminal fraction for each (dose_state, overlap_bin) combination.
             terminal_oar_penalty = penalty_calc_single(best_actions[:, None], min_dose, _VOLUME_SPACE[None, :])  # shape: (N_dose, N_overlap)
 
-            # Apply _INFEASIBILITY_SENTINEL to dose states where the terminal fraction still leaves
-            # the patient underdosed or overdosed. np.round guards against floating-point noise near prescribed_dose.
-            underdose_penalty = np.zeros(future_accumulated_dose.shape)
-            overdose_penalty  = np.zeros(future_accumulated_dose.shape)
-            underdose_penalty[np.round(future_accumulated_dose, 2) < prescribed_dose] = _INFEASIBILITY_SENTINEL
-            overdose_penalty[np.round(future_accumulated_dose, 2) > prescribed_dose] = _INFEASIBILITY_SENTINEL
+            # Apply infeasibility penalty to dose states where the terminal fraction still leaves
+            # the patient underdosed or overdosed. The penalty is a flat _INFEASIBILITY_SENTINEL plus
+            # a deficit-scaled term: (prescribed - total) for underdose, (total - prescribed) for overdose.
+            # The deficit term lets the DP prefer "less infeasible" actions when every action at a given
+            # state is infeasible (e.g., accumulated dose so low at F4 that every d_F4 still underdoses):
+            # without it, the flat sentinel is equal across all actions and the tiebreaker falls through
+            # to the immediate OAR cost, which always prefers min_dose - even when max_dose would reduce
+            # the unavoidable underdose. np.round guards against floating-point noise near prescribed_dose.
+            rounded_total = np.round(future_accumulated_dose, 2)
+            underdose_mask = rounded_total < prescribed_dose
+            overdose_mask  = rounded_total > prescribed_dose
+            underdose_penalty = np.where(
+                underdose_mask,
+                _INFEASIBILITY_SENTINEL - _DEFICIT_PENALTY_COEF * (prescribed_dose - future_accumulated_dose),
+                0.0,
+            )
+            overdose_penalty = np.where(
+                overdose_mask,
+                _INFEASIBILITY_SENTINEL - _DEFICIT_PENALTY_COEF * (future_accumulated_dose - prescribed_dose),
+                0.0,
+            )
 
             # Terminal state value = immediate cost + feasibility penalties.
             # The value is independent of belief (mu, sigma) because at the terminal fraction the
             # dose decision is fully determined by the remaining dose, not the overlap belief.
             terminal_state_value = (-terminal_oar_penalty + underdose_penalty[:, None] + overdose_penalty[:, None])  # shape: (N_dose, N_overlap)
             values[i]   = terminal_state_value[:, :, None, None]                                           # broadcast over belief dimensions; shape: (N_dose, N_overlap, N_mu, N_sigma)
-            policies[i] = best_actions[:, None, None, None] * np.ones((N_dose, N_overlap, N_mu, N_sigma))  # same best action for every (overlap, belief) combination
+            policies[i, :, :, :, :] = best_actions[:, None, None, None]  # broadcast fill — avoids allocating a full float64 temporary
 
     return dict(**base, values=values, policies=policies, overlap_penalty=overlap_penalty, is_infeasible=False, fixed_dose=None)
 
@@ -488,7 +513,7 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
     # Minimum clinically relevant scan range: 6.5 cc covers the 99th percentile of the observed
     # 58-patient cohort overlap distribution, ensuring the table always spans a useful range even
     # when the patient's current belief is very narrow (e.g. only 1 observation so far).
-    distribution_max = 6.5 if volume_space.max() < 6.5 else volume_space.max()
+    distribution_max = COHORT_MAX_OVERLAP_CC if volume_space.max() < COHORT_MAX_OVERLAP_CC else volume_space.max()
     min_dose_deliverable = min_dose_to_deliver(accumulated_dose=accumulated_dose, fractions_left=number_of_fractions - fraction_index_today + 1, prescribed_dose=mean_dose * number_of_fractions, min_dose=min_dose, max_dose=max_dose)
 
     # Run the DP backward sweep once — it is independent of which overlap will be observed
@@ -498,7 +523,7 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
     # Scan always starts at 0.0 cc, regardless of the patient's observed overlap history.
     # This ensures the table is complete for any overlap that could be observed at the next fraction,
     # including very small values that fall far below the patient's current belief mean.
-    volumes_to_check = [0.0]  # start from 0 cc and grow in 0.1 cc increments until we meet stop criteria
+    volumes_to_check = [0.0]  # start from 0 cc and grow in PRECOMPUTE_SCAN_STEP_CC increments until we meet stop criteria
     predicted_policies = []
 
     while True:
@@ -516,7 +541,7 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
         if covered_distribution_range and reached_minimum_policy:
             break
 
-        volumes_to_check.append(np.round(volume + 0.1, 10))  # avoid float drift from repeated +0.1 operations
+        volumes_to_check.append(np.round(volume + PRECOMPUTE_SCAN_STEP_CC, 10))  # avoid float drift from repeated additions
 
     volumes_to_check = np.asarray(volumes_to_check)
     predicted_policies = np.asarray(predicted_policies)

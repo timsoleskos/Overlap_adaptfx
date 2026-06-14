@@ -24,7 +24,7 @@ with a Student-t CDF-difference; _P_BELIEF would then require a corresponding up
 import numpy as np
 from scipy.stats import norm
 
-from .helper_functions import nearest_idx
+from .helper_functions import nearest_idx, welford_update
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ _SIGMA_MIN = float(_SIGMA_GRID[0])
 
 # Fixed overlap state space: 0 to 44 cc in 0.1 cc steps, matching TPS output resolution.
 # Hardcoded to 44 cc (independent of _SIGMA_GRID) so that bin width stays exactly 0.1 cc.
-# 44 cc covers mu_grid_max (30 cc) + 4 × sigma_grid_max (4.5 cc) = 48 cc with margin to spare;
+# 44 cc covers mu_grid_max (30 cc) + 3 × sigma_grid_max (4.5 cc) = 43.5 cc with margin to spare;
 # the tail probability beyond 44 cc is negligible for any belief on the grid.
 _VOLUME_SPACE = np.linspace(0.0, 44.0, 441)  # 0.1 cc steps, fixed upper bound
 
@@ -99,8 +99,7 @@ def _hypothetical_belief_grid_indices(mu, sigma, volume_space, observation_count
     _SIGMA_GRID, used to look up future values in the DP values array.
     Uses Welford's online algorithm to update the running mean and variance.
     """
-    mu_prime = (observation_count * mu + volume_space) / (observation_count + 1)  # new mean after observing each hypothetical overlap
-    sigma2_prime = (observation_count * sigma ** 2 + (volume_space - mu) * (volume_space - mu_prime)) / (observation_count + 1)  # new variance after observing each hypothetical overlap
+    mu_prime, sigma2_prime = welford_update(mu, sigma ** 2, observation_count, volume_space)
     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))  # new sigma, clamped to avoid zero with few observations
     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])          # clamp new mu to grid's range
     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])  # clamp new sigma to grid's range
@@ -154,10 +153,7 @@ def _bellman_expectation_full_grid(values_prev, observation_count):
     sigma_vals = _SIGMA_GRID[None, :, None]  # (1, N_sigma, 1)
     o_vals = _VOLUME_SPACE[None, None, :]    # (1, 1, N_overlap)
 
-    mu_prime = (observation_count * mu_vals + o_vals) / (observation_count + 1)  # new mean after observing each hypothetical overlap
-    delta = o_vals - mu_vals         # deviation of new observation from old mean
-    delta_prime = o_vals - mu_prime  # deviation of new observation from new mean (Welford variance term)
-    sigma2_prime = (observation_count * sigma_vals ** 2 + delta * delta_prime) / (observation_count + 1)  # new variance (Welford online update)
+    mu_prime, sigma2_prime = welford_update(mu_vals, sigma_vals ** 2, observation_count, o_vals)
     sigma_prime = np.sqrt(np.maximum(sigma2_prime, _SIGMA_MIN ** 2))  # new std, floored at _SIGMA_MIN
     mu_prime = np.clip(mu_prime, _MU_GRID[0], _MU_GRID[-1])
     sigma_prime = np.clip(sigma_prime, _SIGMA_GRID[0], _SIGMA_GRID[-1])
@@ -206,4 +202,4 @@ def current_belief_probdist(mu: float, sigma: float) -> np.ndarray:
         np.ndarray: probability of each overlap bin j; shape (N_overlap,).
     """
     from .helper_functions import probdist
-    return probdist((mu, sigma), _VOLUME_SPACE)
+    return probdist((mu, max(sigma, _SIGMA_MIN)), _VOLUME_SPACE)
