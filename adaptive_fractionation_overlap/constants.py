@@ -6,18 +6,6 @@ This module contains global constants that are used across different modules
 in the adaptive fractionation calculations.
 """
 
-__all__ = [
-    "SLOPE",
-    "INTERCEPT",
-    "DEFAULT_MIN_DOSE",
-    "DEFAULT_MAX_DOSE",
-    "DEFAULT_MEAN_DOSE",
-    "DEFAULT_DOSE_STEPS",
-    "DEFAULT_NUMBER_OF_FRACTIONS",
-    "DEFAULT_ALPHA",
-    "DEFAULT_BETA",
-]
-
 # Default penalty function parameters
 SLOPE = -0.65
 INTERCEPT = 0.0
@@ -32,3 +20,9 @@ DEFAULT_NUMBER_OF_FRACTIONS = 5
 # Gamma distribution parameters
 DEFAULT_ALPHA = 1.072846744379587
 DEFAULT_BETA = 0.7788684130749829
+
+# Dynamic programming sentinel values
+INFEASIBLE_VALUE = -1_000_000_000_000.0
+
+COHORT_MAX_OVERLAP_CC = 6.5  # 99th percentile overlap in the 58-patient cohort
+PRECOMPUTE_SCAN_STEP_CC = 0.1

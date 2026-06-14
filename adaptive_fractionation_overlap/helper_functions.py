@@ -4,6 +4,8 @@ In this file are all helper functions that are needed for the adaptive fractiona
 """
 
 __all__ = [
+    "s2_calc",
+    "welford_update",
     "std_calc",
     "get_state_space",
     "probdist",
@@ -15,12 +17,40 @@ __all__ = [
     "build_dose_decision_lines",
 ]
 
+from functools import lru_cache
+
 import numpy as np
 from scipy.stats import norm
 import matplotlib
 import matplotlib.pyplot as plt
 from .constants import SLOPE, INTERCEPT
 
+_STD_VALUES = np.arange(0.001, 10, 0.001)
+_STD_VALUES_SQUARED = _STD_VALUES**2
+
+
+@lru_cache(maxsize=64)
+def _std_prior_term(alpha, beta, n):
+    return _STD_VALUES ** (alpha - n) * np.exp(-_STD_VALUES / beta)
+
+
+def s2_calc(measured_data):
+    """Return the empirical population variance S^2 of the observed overlaps."""
+    return float(np.var(measured_data))
+
+
+def welford_update(mean, variance, observation_count, new_observation):
+    """Apply a one-step Welford update to the running mean and population variance."""
+    mean = np.asarray(mean, dtype=float)
+    variance = np.asarray(variance, dtype=float)
+    new_observation = np.asarray(new_observation, dtype=float)
+
+    mean_next = (observation_count * mean + new_observation) / (observation_count + 1)
+    variance_next = (
+        observation_count * variance
+        + (new_observation - mean) * (new_observation - mean_next)
+    ) / (observation_count + 1)
+    return mean_next, np.maximum(variance_next, 0.0)
 
 
 def std_calc(measured_data, alpha, beta):
@@ -47,15 +77,11 @@ def std_calc(measured_data, alpha, beta):
     In clinical practice (58-patient cohort max σ ≈ 3.3 cc) this cap is never reached.
     """
     n = len(measured_data)
-    std_values = np.arange(0.001, 10, 0.001)
-    measured_variance = np.var(measured_data)
-    likelihood_values = (
-        std_values ** (alpha - 1)
-        / std_values ** (n - 1)
-        * np.exp(-1 / beta * std_values)
-        * np.exp(-measured_variance / (2 * (std_values**2 / n)))
+    measured_variance = s2_calc(measured_data)
+    likelihood_values = _std_prior_term(alpha, beta, n) * np.exp(
+        -measured_variance / (2 * (_STD_VALUES_SQUARED / n))
     )
-    std = std_values[np.argmax(likelihood_values)]
+    std = _STD_VALUES[np.argmax(likelihood_values)]
     return std
 
 
@@ -242,9 +268,10 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
             "and is not compatible with this plotting function."
         )
     values = values.copy()
-    values[values < -10000000000] = 10000000000
-    min_Value = np.min(values)
-    values[values == 10000000000] = 1.1*min_Value
+    plot_infeasible_value = 1e10
+    values[values < -plot_infeasible_value] = plot_infeasible_value
+    min_value = np.min(values)
+    values[values == plot_infeasible_value] = 1.1 * min_value
     colormap = matplotlib.colormaps['jet']
     number_of_plots = number_of_fractions - fraction
     fig, axs = plt.subplots(1,number_of_plots, figsize = (number_of_plots*10,10))
