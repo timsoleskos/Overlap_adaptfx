@@ -12,8 +12,6 @@ htmlcov/
 .venv-wsl/
 .claude/
 .codex
-outputs/
-evaluation/outputs/
 .tox/
 .venv/
 .env

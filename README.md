@@ -46,6 +46,8 @@ Notebook-based clinical evaluation, benchmark runners, variant comparisons, gene
 timsoleskos/Overlap_adaptfx_workbench
 ```
 
+The workbench is private. If you need access, message Tim Soles Kos (`timsoleskos`).
+
 ## Running the Streamlit App
 
 An interactive web interface is available for computing optimal dose delivery:
