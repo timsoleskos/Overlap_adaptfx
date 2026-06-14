@@ -96,7 +96,7 @@ adaptive_fractionation_overlap/
 tests/
 ├── conftest.py                # Test fixtures and shared data
 ├── test_constants.py          # Constants validation tests
-├── test_helper_functions.py   # Mathematical function tests  
+├── test_helper_functions.py   # Mathematical function tests
 ├── test_core_adaptfx.py       # Core algorithm tests
 ├── test_fixtures.py           # Test infrastructure validation
 
