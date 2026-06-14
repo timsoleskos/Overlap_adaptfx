@@ -122,6 +122,8 @@ class TestAdaptiveFractionationCore:
         assert isinstance(volume_space, np.ndarray), "Volume space should be numpy array"
         assert isinstance(physical_dose, (int, float, np.number)), "Physical dose should be scalar"
         assert isinstance(values, np.ndarray), "Values should be numpy array"
+        assert values.dtype == np.float32, "Value tables should use float32 to reduce DP memory"
+        assert policies.dtype == np.float32, "Policy tables should use float32 to reduce DP memory"
         assert isinstance(dose_space, np.ndarray), "Dose space should be numpy array"
         assert isinstance(probabilities, np.ndarray), "Probabilities should be numpy array"
         
@@ -625,9 +627,9 @@ class TestCoreAdaptfxGoldenRegression:
         # optimal_state_value = np.max(actual_value): best total expected OAR cost from this fraction onwards.
         # Last fraction is 0.0 since actual_value = np.zeros(1) when no future fractions remain.
         expected_final_penalties = np.array([
-            -23.22503829693745,
-            -15.347134772349689,
-            -14.670093865382736,
+            -23.225035756002807,
+            -15.347134224829086,
+            -14.6700926131652,
             -14.429293729122907,
             0.0,
         ])
@@ -658,7 +660,7 @@ class TestCoreAdaptfxGoldenRegression:
 
         np.testing.assert_allclose(actual_physical_doses, expected_physical_doses, atol=1e-12)
         np.testing.assert_allclose(actual_penalties_added, expected_penalties_added, atol=1e-12)
-        np.testing.assert_allclose(actual_final_penalties, expected_final_penalties, atol=1e-12)
+        np.testing.assert_allclose(actual_final_penalties, expected_final_penalties, atol=1e-6)
 
 # Performance and edge case tests
 @pytest.mark.unit
@@ -736,10 +738,9 @@ class TestCoreAdaptfxPerformance:
 
         start_time = time.time()
 
-        # NOTE: patients are processed sequentially here by design.
-        # _fill_values_policies already parallelises across overlap bins via Numba prange,
-        # so launching multiple patient solves in parallel threads/processes would
-        # over-subscribe the CPU and give no additional throughput.
+        # NOTE: patients are processed sequentially here by design; parallel cohort
+        # execution should be benchmarked explicitly because each solve allocates
+        # large DP value tables and bounded action-value chunks.
         for patient_overlaps, prescription in zip(
             evaluation_patient_data['overlaps'], 
             evaluation_patient_data['prescriptions']

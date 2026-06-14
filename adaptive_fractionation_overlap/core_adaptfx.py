@@ -26,7 +26,6 @@ __all__ = [  # limits what `from core_adaptfx import *` exposes
 
 import numpy as np
 import pandas as pd
-from numba import njit, prange
 
 from .constants import (
     DEFAULT_MIN_DOSE,
@@ -63,6 +62,9 @@ from .belief_model import (
 
 
 _INFEASIBILITY_SENTINEL = INFEASIBLE_VALUE  # large negative value that marks infeasible DP states; all uses in this module must reference this constant
+_VALUE_DTYPE = np.float32
+_VALUE_MASK_SENTINEL = np.finfo(_VALUE_DTYPE).min
+_VALUE_CHUNK_TARGET_BYTES = 64 * 1024 * 1024
 # Per-Gy deficit coefficient added on top of the flat sentinel at the terminal fraction.
 # Chosen so that deficit magnitude (up to tens of Gy) changes the value by ~1e6-1e8 -
 # enough to tiebreak between multiple infeasible actions (smaller deficit wins) while
@@ -84,34 +86,37 @@ def _set_infeasible_state(fixed_dose, values, N_overlap, remaining_fractions):
     return current_fraction_policy, actual_value
 
 
-@njit(parallel=True, cache=True)
-def _fill_values_policies(future_values_masked_action_last, overlap_penalty, flat_index_base, action_space, values_state, policies_state):
-    """Fill values_state and policies_state over all overlap bins in parallel.
+def _fill_values_policies(future_values_masked_action_last, overlap_penalty, action_space, values_state, policies_state):
+    """Fill values_state and policies_state over all overlap bins in bounded chunks.
 
-    For each overlap bin j, subtracts the per-action penalty from the future-value
-    array, finds the best action via argmax, gathers the corresponding value, and
-    records the best action.  Parallelised over j (N_overlap=441 independent iterations).
+    For overlap chunks, subtracts the per-action penalty, takes argmax over actions,
+    and writes the best value/action into the provided output arrays. Chunking keeps
+    the largest action-value temporary bounded while avoiding the Numba/LLVM backend
+    issues seen with float32 kernels on this environment.
 
-    future_values_masked_action_last: (N_dose, N_mu, N_sigma, N_action) — future values with invalid actions masked to min_float, action axis last for cache-friendly argmax
-    overlap_penalty:                  (N_overlap, N_action)             — OAR penalty for each (overlap bin, action) pair
-    flat_index_base:                  (N_dose, N_mu, N_sigma)           — flat index of the first action entry for each (dose, mu, sigma) triple
-    action_space:                     (N_action,)                       — deliverable doses
-    values_state:                     (N_dose, N_overlap, N_mu, N_sigma) — output: best achievable value for each (dose, overlap, belief) combination
-    policies_state:                   (N_dose, N_overlap, N_mu, N_sigma) — output: optimal dose action for each (dose, overlap, belief) combination
+    future_values_masked_action_last: (N_dose, N_mu, N_s2, N_action) — future values with invalid actions masked to min_float
+    overlap_penalty:                  (N_overlap, N_action)          — OAR penalty for each (overlap bin, action) pair
+    action_space:                     (N_action,)                    — deliverable doses
+    values_state:                     (N_dose, N_overlap, N_mu, N_s2) — output: best achievable value for each state
+    policies_state:                   (N_dose, N_overlap, N_mu, N_s2) — output: optimal dose action for each state
     """
-    N_dose   = future_values_masked_action_last.shape[0]
-    N_mu     = future_values_masked_action_last.shape[1]
-    N_sigma  = future_values_masked_action_last.shape[2]
+    N_dose, N_mu, N_s2, N_action = future_values_masked_action_last.shape
     N_overlap = overlap_penalty.shape[0]
-    for j in prange(N_overlap):
-        vs_j = future_values_masked_action_last - overlap_penalty[j]   # subtract this overlap bin's penalty from all future values; shape: (N_dose, N_mu, N_sigma, N_action), thread-local
-        ai = np.argmax(vs_j, axis=3)                                   # index of the best action for each (dose, mu, sigma) triple; shape: (N_dose, N_mu, N_sigma)
-        vs_j_flat = vs_j.ravel()
-        for d in range(N_dose):
-            for m in range(N_mu):
-                for s in range(N_sigma):
-                    values_state[d, j, m, s]   = vs_j_flat[flat_index_base[d, m, s] + ai[d, m, s]]  # gather the best value using the precomputed flat index
-                    policies_state[d, j, m, s] = action_space[ai[d, m, s]]                           # record the corresponding optimal dose action
+    bytes_per_overlap = N_dose * N_mu * N_s2 * N_action * future_values_masked_action_last.dtype.itemsize
+    overlap_chunk = max(1, min(N_overlap, _VALUE_CHUNK_TARGET_BYTES // max(bytes_per_overlap, 1)))
+    for start in range(0, N_overlap, overlap_chunk):
+        stop = min(start + overlap_chunk, N_overlap)
+        action_values = (
+            future_values_masked_action_last[:, None, :, :, :]
+            - overlap_penalty[None, start:stop, None, None, :]
+        )
+        best_action_idx = action_values.argmax(axis=4)
+        values_state[:, start:stop, :, :] = np.take_along_axis(
+            action_values,
+            best_action_idx[..., None],
+            axis=4,
+        )[..., 0]
+        policies_state[:, start:stop, :, :] = action_space[best_action_idx]
 
 
 def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps, alpha, beta):
@@ -161,7 +166,7 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
     remaining_ptv_dose = prescribed_dose - accumulated_dose
     remaining_fractions = number_of_fractions - fraction_index_today + 1  # includes the current fraction (not yet delivered)
 
-    values  = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_s2))  # V(s): DP Value Function over all future states
+    values  = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_s2), dtype=_VALUE_DTYPE)  # V(s): DP Value Function over all future states
     policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_s2), dtype=np.float32)  # π(s): optimal Dose Action for each future state
 
     base = dict(
@@ -180,8 +185,8 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             values[:] = _INFEASIBILITY_SENTINEL
         return dict(**base, values=values, policies=policies, overlap_penalty=None, is_infeasible=True, fixed_dose=max_dose)
 
-    min_float = np.finfo(np.float64).min
-    overlap_penalty = penalty_calc_matrix(action_space, _VOLUME_SPACE, min_dose)  # OAR immediate cost for each (action, overlap) combination; constant across all DP iterations
+    min_float = _VALUE_MASK_SENTINEL
+    overlap_penalty = penalty_calc_matrix(action_space, _VOLUME_SPACE, min_dose).astype(_VALUE_DTYPE, copy=False)  # OAR immediate cost for each (action, overlap) combination; constant across all DP iterations
 
     # Backward sweep over future fractions only (fraction_index_today+1 through number_of_fractions).
     # The current fraction (fraction_index_today) is handled separately in _resolve_current_fraction,
@@ -223,27 +228,16 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             # negative number), so the Numba kernel never selects an overdosing action as the optimal policy.
             future_values_masked = np.where(valid_actions[:, :, None, None], future_values_full, min_float)  # shape: (N_dose, N_action, N_mu, N_s2)
 
-            # Transpose to (N_dose, N_mu, N_s2, N_action) so the action axis is last — this makes the
-            # argmax inside the Numba kernel scan a contiguous memory region, which is cache-friendly (~18% faster).
+            # Transpose to (N_dose, N_mu, N_s2, N_action) so the action axis is last,
+            # letting the Numba kernel scan contiguous action entries without a per-thread argmax temporary.
             future_values_masked_action_last = future_values_masked.transpose(0, 2, 3, 1).copy()  # shape: (N_dose, N_mu, N_s2, N_action), contiguous
 
-            # Precompute flat_index_base: for each (dose, mu, S^2) triple, the flat index in the ravelled
-            # future_values_masked_action_last where that triple's action entries begin.
-            # Layout is (N_dose, N_mu, N_s2, N_action), so the flat position of element [d, m, s, a] is:
-            #   (d * N_mu * N_s2  +  m * N_s2  +  s) * N_action  +  a
-            # flat_index_base stores the part before '+ a', so the kernel only needs to add ai[d,m,s] at
-            # lookup time — avoiding a take_along_axis call and its temporary allocations.
-            dose_broadcast_idx = np.arange(N_dose)[:, None, None]  # shape (N_dose, 1, 1): broadcasts over the belief grid
-            mu_broadcast_idx   = np.arange(N_mu)[None, :, None]    # shape (1, N_mu, 1): broadcasts over dose and S^2
-            s2_broadcast_idx   = np.arange(N_s2)[None, None, :]    # shape (1, 1, N_s2): broadcasts over dose and mu
-            flat_index_base = (dose_broadcast_idx * N_mu * N_s2 + mu_broadcast_idx * N_s2 + s2_broadcast_idx) * len(action_space)  # shape: (N_dose, N_mu, N_s2)
-
-            values_state  = np.empty((N_dose, N_overlap, N_mu, N_s2))  # Value Function for this DP step; will be filled by the Numba kernel
+            values_state  = np.empty((N_dose, N_overlap, N_mu, N_s2), dtype=_VALUE_DTYPE)  # Value Function for this DP step; will be filled by the Numba kernel
             policies_state = np.empty((N_dose, N_overlap, N_mu, N_s2), dtype=np.float32) # Optimal Policy for this DP step; will be filled by the Numba kernel
 
             # For each (dose, overlap, belief) combination, find the action that maximises
             # total state value (future value minus immediate OAR cost), and record that value and action in values_state and policies_state.
-            _fill_values_policies(future_values_masked_action_last, overlap_penalty, flat_index_base, action_space, values_state, policies_state)
+            _fill_values_policies(future_values_masked_action_last, overlap_penalty, action_space, values_state, policies_state)
             values[i]   = values_state
             policies[i] = policies_state
 
@@ -281,8 +275,11 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
             # Terminal state value = immediate cost + feasibility penalties.
             # The value is independent of belief (mu, S^2) because at the terminal fraction the
             # dose decision is fully determined by the remaining dose, not the overlap belief.
-            terminal_state_value = (-terminal_oar_penalty + underdose_penalty[:, None] + overdose_penalty[:, None])  # shape: (N_dose, N_overlap)
-            values[i]   = terminal_state_value[:, :, None, None]                                           # broadcast over belief dimensions; shape: (N_dose, N_overlap, N_mu, N_s2)
+            terminal_state_value = np.asarray(
+                -terminal_oar_penalty + underdose_penalty[:, None] + overdose_penalty[:, None],
+                dtype=_VALUE_DTYPE,
+            )  # shape: (N_dose, N_overlap)
+            values[i]   = terminal_state_value[:, :, None, None]                                         # broadcast over belief dimensions; shape: (N_dose, N_overlap, N_mu, N_s2)
             policies[i, :, :, :, :] = best_actions[:, None, None, None]  # broadcast fill — avoids allocating a full float64 temporary
 
     return dict(**base, values=values, policies=policies, overlap_penalty=overlap_penalty, is_infeasible=False, fixed_dose=None)
