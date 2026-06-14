@@ -1,10 +1,12 @@
 # Adaptive Fractionation for Overlapping Organs
 
-[![Test Suite](https://github.com/YoelPH/Overlap_adaptfx/actions/workflows/tests.yml/badge.svg)](https://github.com/YoelPH/Overlap_adaptfx/actions/workflows/tests.yml)
-[![Quick Tests](https://github.com/YoelPH/Overlap_adaptfx/actions/workflows/quick-tests.yml/badge.svg)](https://github.com/YoelPH/Overlap_adaptfx/actions/workflows/quick-tests.yml)
+[![Test Suite](https://github.com/timsoleskos/Overlap_adaptfx/actions/workflows/tests.yml/badge.svg)](https://github.com/timsoleskos/Overlap_adaptfx/actions/workflows/tests.yml)
+[![Quick Tests](https://github.com/timsoleskos/Overlap_adaptfx/actions/workflows/quick-tests.yml/badge.svg)](https://github.com/timsoleskos/Overlap_adaptfx/actions/workflows/quick-tests.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 A Python package for adaptive radiotherapy fractionation that optimizes dose delivery based on real-time organ-at-risk overlap measurements during treatment planning and delivery.
+
+This fork extends the original adaptive fractionation package with overlap-based research and development work maintained by Tim Soles Kos.
 
 ## Overview
 
@@ -19,7 +21,7 @@ The adaptive approach improves treatment outcomes by maximizing dose when overla
 
 ### From Source (Development)
 ```bash
-git clone https://github.com/YoelPH/Overlap_adaptfx.git
+git clone https://github.com/timsoleskos/Overlap_adaptfx.git
 cd Overlap_adaptfx
 pip install -r requirements.txt
 pip install -e .
@@ -27,7 +29,24 @@ pip install -e .
 
 ## Quick Start
 
-Check the `evaluation/Evaluation.ipynb` notebook for a comprehensive example of using the package with clinical data.
+After installing the package, run the test suite or launch the Streamlit app to verify the local checkout:
+
+```bash
+pytest tests/
+streamlit run app.py
+```
+
+## Evaluation and Benchmarking
+
+This repository is kept focused on the installable package, the Streamlit app, and package tests.
+
+Notebook-based clinical evaluation, benchmark runners, variant comparisons, generated reports, and research utilities live in the private companion workbench repository:
+
+```text
+timsoleskos/Overlap_adaptfx_workbench
+```
+
+The workbench is private. If you need access, message Tim Soles Kos (`timsoleskos`).
 
 ## Running the Streamlit App
 
@@ -81,13 +100,9 @@ adaptive_fractionation_overlap/
 tests/
 ├── conftest.py                # Test fixtures and shared data
 ├── test_constants.py          # Constants validation tests
-├── test_helper_functions.py   # Mathematical function tests  
+├── test_helper_functions.py   # Mathematical function tests
 ├── test_core_adaptfx.py       # Core algorithm tests
 ├── test_fixtures.py           # Test infrastructure validation
-
-evaluation/
-├── Evaluation.ipynb           # Analysis notebooks
-└── ACTION_patients_overlap_only.xlsx  # Clinical dataset
 
 .github/workflows/
 ├── tests.yml                  # Comprehensive CI/CD pipeline
@@ -124,7 +139,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Contact
 
-- **Author**: Yoel Perez-Haas
+- **Authors**: Yoel Perez-Haas; Tim Soles Kos
 - **Institution**: University Hospital Zurich
 - **Email**: yoel.perezhaas@usz.ch
-- **Repository**: https://github.com/YoelPH/Overlap_adaptfx
+- **Repository**: https://github.com/timsoleskos/Overlap_adaptfx
