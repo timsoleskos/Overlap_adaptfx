@@ -104,13 +104,13 @@ class TestCurrentBeliefProbdist:
             f"Sum should be ≈1 for a central belief; got {np.sum(result):.8f}"
         )
 
-    def test_sum_less_than_one_for_extreme_belief(self):
-        """For a belief whose tails extend beyond _VOLUME_SPACE the sum is < 1 (no tail-folding)."""
+    def test_sum_equals_one_for_extreme_belief(self):
+        """For a belief whose tails extend beyond _VOLUME_SPACE, tails are folded into boundary bins."""
         # Belief centred at _VOLUME_SPACE[-1] with large sigma: right tail is clipped
         result = current_belief_probdist(mu=_VOLUME_SPACE[-1], sigma=5.0)
         total = np.sum(result)
-        assert total < 1.0, (
-            f"current_belief_probdist should sum to <1 for an extreme belief; got {total:.6f}"
+        assert total == pytest.approx(1.0, abs=1e-12), (
+            f"current_belief_probdist should sum to 1.0 after tail-folding; got {total:.6f}"
         )
 
     def test_peak_near_mu(self):
