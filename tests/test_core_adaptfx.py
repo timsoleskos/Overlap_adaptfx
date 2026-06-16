@@ -738,9 +738,10 @@ class TestCoreAdaptfxPerformance:
 
         start_time = time.time()
 
-        # NOTE: patients are processed sequentially here by design; parallel cohort
-        # execution should be benchmarked explicitly because each solve allocates
-        # large DP value tables and bounded action-value chunks.
+        # NOTE: patients are processed sequentially here by design.
+        # _fill_values_policies already parallelises across overlap bins via Numba prange,
+        # so launching multiple patient solves in parallel threads/processes would
+        # over-subscribe the CPU and give no additional throughput.
         for patient_overlaps, prescription in zip(
             evaluation_patient_data['overlaps'], 
             evaluation_patient_data['prescriptions']
