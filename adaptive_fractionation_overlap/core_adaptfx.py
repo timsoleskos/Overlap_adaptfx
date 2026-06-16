@@ -119,7 +119,18 @@ def _fill_values_policies(future_values_masked_action_last, overlap_penalty, act
         policies_state[:, start:stop, :, :] = action_space[best_action_idx]
 
 
-def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps, alpha, beta):
+def _build_dp_context(
+    fraction_index_today,
+    number_of_fractions,
+    accumulated_dose,
+    min_dose,
+    max_dose,
+    mean_dose,
+    dose_steps,
+    alpha,
+    beta,
+    current_observation_count,
+):
     """Build dose/action grids and run the DP backward sweep for all future fractions.
 
     Computes everything that is independent of the overlap actually observed at
@@ -193,7 +204,7 @@ def _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dos
     # allowing its cheap per-overlap lookup to be called independently for each candidate overlap.
     for i, fraction_number in enumerate(np.arange(number_of_fractions, fraction_index_today, -1)):
         # i runs from 0 (last treatment fraction) to remaining_fractions-2 (fraction_index_today+1)
-        observation_count = int(fraction_number)  # number of overlap observations accumulated at this fraction
+        observation_count = current_observation_count + (int(fraction_number) - fraction_index_today)
 
         if i != 0:  # not the terminal fraction — run full DP update
 
@@ -332,7 +343,7 @@ def _resolve_current_fraction(ctx, fraction_index_today, number_of_fractions, ob
     initial_belief_sigma = sigma_map_from_variance(initial_belief_s2, len(all_volumes), alpha, beta)
     current_overlap_probs = current_belief_probdist(initial_belief_mu, initial_belief_sigma)
 
-    observation_count = fraction_index_today  # observations accumulated at this fraction (including today's)
+    observation_count = len(all_volumes)  # observations accumulated at this fraction (including planning scan and today's overlap)
 
     if fraction_index_today == number_of_fractions:  # last fraction: dose is fully determined by remaining budget
         recommended_dose = np.clip(remaining_ptv_dose, min_dose, max_dose)
@@ -440,7 +451,18 @@ def adaptive_fractionation_core(fraction_index_today: int, volumes: np.ndarray, 
     volumes = np.asarray(volumes, dtype=float)
     observed_overlap = volumes[-1]
 
-    ctx = _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps, alpha, beta)
+    ctx = _build_dp_context(
+        fraction_index_today,
+        number_of_fractions,
+        accumulated_dose,
+        min_dose,
+        max_dose,
+        mean_dose,
+        dose_steps,
+        alpha,
+        beta,
+        current_observation_count=len(volumes),
+    )
     recommended_dose, actual_value, current_fraction_policy, current_overlap_probs = _resolve_current_fraction(
         ctx, fraction_index_today, number_of_fractions, observed_overlap, volumes[:-1], alpha, beta
     )
@@ -520,7 +542,18 @@ def precompute_plan(fraction_index_today: int, volumes: np.ndarray, accumulated_
 
     # Run the DP backward sweep once — it is independent of which overlap will be observed
     # at fraction_index_today, so the result is shared across all candidate overlap values.
-    ctx = _build_dp_context(fraction_index_today, number_of_fractions, accumulated_dose, min_dose, max_dose, mean_dose, dose_steps, alpha, beta)
+    ctx = _build_dp_context(
+        fraction_index_today,
+        number_of_fractions,
+        accumulated_dose,
+        min_dose,
+        max_dose,
+        mean_dose,
+        dose_steps,
+        alpha,
+        beta,
+        current_observation_count=len(volumes) + 1,
+    )
 
     # Scan always starts at 0.0 cc, regardless of the patient's observed overlap history.
     # This ensures the table is complete for any overlap that could be observed at the next fraction,

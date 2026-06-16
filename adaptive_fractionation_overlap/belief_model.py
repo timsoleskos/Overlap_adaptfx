@@ -16,12 +16,8 @@ Tail-folding note
 -----------------
 Branch-probability tables fold the probability mass that falls below
 _VOLUME_SPACE[0] or above _VOLUME_SPACE[-1] into the boundary bins, so each row
-sums to exactly 1.0. current_belief_probdist (used for the actual observed
-patient belief at each fraction) does NOT fold tails, so its output can sum to
-slightly less than 1.0 if the patient's belief tails extend outside
-_VOLUME_SPACE. In practice this is negligible because _VOLUME_SPACE is fixed at
-44 cc, far beyond the maximum observed overlap of ~29 cc in the 58-patient
-ACTION cohort.
+sums to exactly 1.0. current_belief_probdist applies the same boundary
+tail-folding for the actual observed patient belief at each fraction.
 """
 
 from functools import lru_cache
@@ -189,11 +185,10 @@ def _bellman_expectation_full_grid(values_prev, observation_count, alpha, beta):
 def current_belief_probdist(mu: float, sigma: float) -> np.ndarray:
     """Return P(overlap in bin j | current patient belief (mu, sigma)) over _VOLUME_SPACE.
 
-    Evaluates Gaussian CDF differences over the fixed _VOLUME_SPACE grid, without
-    tail-folding. The probabilities may therefore sum to slightly less than 1.0
-    when the belief tails extend beyond _VOLUME_SPACE; in practice this is
-    negligible because _VOLUME_SPACE is fixed at 44 cc, far beyond the maximum
-    observed overlap.
+    Evaluates Gaussian CDF differences over the fixed _VOLUME_SPACE grid and
+    folds probability mass outside the supported overlap range into the boundary
+    bins. The returned probabilities therefore sum to 1.0, matching the branch
+    probability tables used by the DP solver.
 
     Args:
         mu (float): current belief mean (cc).
@@ -202,6 +197,11 @@ def current_belief_probdist(mu: float, sigma: float) -> np.ndarray:
     Returns:
         np.ndarray: probability of each overlap bin j; shape (N_overlap,).
     """
-    from .helper_functions import probdist
-
-    return probdist((mu, max(sigma, _SIGMA_MIN)), _VOLUME_SPACE)
+    sigma = max(sigma, _SIGMA_MIN)
+    spacing = _VOLUME_SPACE[1] - _VOLUME_SPACE[0]
+    upper_bounds = _VOLUME_SPACE + spacing / 2
+    lower_bounds = _VOLUME_SPACE - spacing / 2
+    probabilities = norm.cdf(upper_bounds, loc=mu, scale=sigma) - norm.cdf(lower_bounds, loc=mu, scale=sigma)
+    probabilities[0] += norm.cdf(lower_bounds[0], loc=mu, scale=sigma)
+    probabilities[-1] += 1.0 - norm.cdf(upper_bounds[-1], loc=mu, scale=sigma)
+    return probabilities

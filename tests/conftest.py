@@ -235,38 +235,6 @@ def assert_increasing(array, strict=False):
 
 
 # Custom assertions for adaptive fractionation
-def assert_valid_dose_plan(physical_doses, accumulated_doses, target_dose=None, tolerance=2.0):
-    """
-    Comprehensive validation for a dose plan.
-    
-    This checks all the standard requirements for a valid
-    adaptive fractionation dose plan.
-    """
-    physical_doses = np.asarray(physical_doses)
-    accumulated_doses = np.asarray(accumulated_doses)
-    
-    # Check array lengths match
-    assert len(physical_doses) == len(accumulated_doses), \
-        "Physical and accumulated dose arrays should have same length"
-    
-    # Check dose bounds
-    assert_dose_bounds(physical_doses)
-    
-    # Check accumulated doses are increasing
-    assert_increasing(accumulated_doses)
-    
-    # Check accumulated doses are cumulative sums
-    expected_accumulated = np.cumsum(physical_doses)
-    assert np.allclose(accumulated_doses, expected_accumulated, atol=1e-10), \
-        "Accumulated doses should be cumulative sum of physical doses"
-    
-    # Check final dose is reasonable
-    if target_dose is not None:
-        final_dose = accumulated_doses[-1]
-        assert abs(final_dose - target_dose) < tolerance, \
-            f"Final dose {final_dose:.1f} should be within {tolerance} Gy of target {target_dose}"
-
-
 def assert_algorithm_output(result, expected_length=9):
     """
     Validate the output format of adaptive_fractionation_core.
