@@ -329,14 +329,14 @@ class TestPlottingFunctions:
         """analytic_plotting raises ValueError when passed Stage A 5D values array.
 
         Stage A (belief-state DP) returns values with shape
-        (remaining_fractions, N_dose, N_overlap, N_mu, N_sigma) — 5D.  The plotting
+        (remaining_fractions, N_dose, N_overlap, N_mu, N_s2) — 5D.  The plotting
         function only understands the older 3D format and must reject 5D input loudly
         instead of silently producing garbage plots.
         """
         import pytest as _pytest
         fraction = 1
         number_of_fractions = 5
-        # Simulate a Stage A values array: (remaining_fractions-1, N_dose, N_overlap, N_mu, N_sigma)
+        # Simulate a Stage A values array: (remaining_fractions-1, N_dose, N_overlap, N_mu, N_s2)
         values_5d = np.random.rand(4, 10, 20, 5, 3)
         volume_space = np.linspace(0, 5, 20)
         dose_space = np.linspace(6, 10, 10)

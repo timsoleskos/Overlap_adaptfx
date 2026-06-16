@@ -333,7 +333,7 @@ class TestAdaptfxFull:
     def test_adaptfx_full_parameter_variations(self, sample_volumes_list):
         """Test adaptfx_full with different parameter sets."""
         # Use number_of_fractions=3 and coarse dose_steps to keep the 5D values
-        # array (n_states × N_dose × N_overlap × N_mu × N_sigma) within CI memory limits.
+        # array (n_states × N_dose × N_overlap × N_mu × N_s2) within CI memory limits.
         base_params = {
             'volumes': sample_volumes_list,
             'number_of_fractions': 3,
@@ -432,11 +432,11 @@ class TestPrecomputePlan:
         dose_array = np.asarray(dose_list, dtype=float)
 
         # Pin current decision frontier shape and values for this known patient case.
-        assert len(volume_array) == 82, "Expected fixed volume frontier length for this scenario"
-        assert len(dose_array) == 82, "Expected fixed dose frontier length for this scenario"
+        assert len(volume_array) == 131, "Expected fixed volume frontier length for this scenario"
+        assert len(dose_array) == 131, "Expected fixed dose frontier length for this scenario"
         np.testing.assert_allclose(np.diff(volume_array), 0.1, atol=1e-12)
         assert volume_array[0] == pytest.approx(0.0, abs=1e-12)
-        assert volume_array[-1] == pytest.approx(8.1, abs=1e-12)
+        assert volume_array[-1] == pytest.approx(13.0, abs=1e-12)
         assert dose_array[0] == pytest.approx(10.0, abs=1e-12)
         assert dose_array[-1] == pytest.approx(6.0, abs=1e-12)
         assert np.all(np.diff(dose_array) <= 1e-12), "Dose decisions should be monotone non-increasing"
@@ -459,12 +459,12 @@ class TestPrecomputePlan:
             [
                 [0.7, 10.0, 9.5],
                 [0.9, 9.5, 9.0],
-                [1.0, 9.0, 8.5],
+                [1.1, 9.0, 8.5],
                 [1.3, 8.5, 8.0],
-                [1.7, 8.0, 7.5],
-                [2.3, 7.5, 7.0],
-                [3.8, 7.0, 6.5],
-                [8.1, 6.5, 6.0],
+                [1.8, 8.0, 7.5],
+                [2.5, 7.5, 7.0],
+                [4.2, 7.0, 6.5],
+                [13.0, 6.5, 6.0],
             ]
         )
         np.testing.assert_allclose(transitions, expected_transitions, atol=1e-12)
@@ -625,9 +625,9 @@ class TestCoreAdaptfxGoldenRegression:
         # optimal_state_value = np.max(actual_value): best total expected OAR cost from this fraction onwards.
         # Last fraction is 0.0 since actual_value = np.zeros(1) when no future fractions remain.
         expected_final_penalties = np.array([
-            -23.251976372982192,
-            -15.356416794508675,
-            -14.677363350363091,
+            -22.835463182140504,
+            -15.195419365525252,
+            -14.655252144731366,
             -14.429293729122907,
             0.0,
         ])

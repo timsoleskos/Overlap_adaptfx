@@ -7,6 +7,7 @@ __all__ = [
     "s2_calc",
     "welford_update",
     "std_calc",
+    "sigma_map_from_variance",
     "get_state_space",
     "probdist",
     "penalty_calc_single",
@@ -25,22 +26,43 @@ import matplotlib
 import matplotlib.pyplot as plt
 from .constants import SLOPE, INTERCEPT
 
-_STD_VALUES = np.arange(0.001, 10, 0.001)
-_STD_VALUES_SQUARED = _STD_VALUES**2
+_SIGMA_MAP_SEARCH_GRID = np.arange(0.001, 10.0, 0.001)
+_SIGMA_MAP_SEARCH_GRID_SQUARED = _SIGMA_MAP_SEARCH_GRID**2
 
 
 @lru_cache(maxsize=64)
-def _std_prior_term(alpha, beta, n):
-    return _STD_VALUES ** (alpha - n) * np.exp(-_STD_VALUES / beta)
+def _sigma_log_prior_term(alpha, beta, observation_count):
+    return (alpha - observation_count) * np.log(_SIGMA_MAP_SEARCH_GRID) - _SIGMA_MAP_SEARCH_GRID / beta
 
 
 def s2_calc(measured_data):
-    """Return the empirical population variance S^2 of the observed overlaps."""
+    """Return the empirical population variance S^2 of the observed overlaps.
+
+    Uses the same convention as the belief-state DP and std_calc: ddof=0, i.e.
+    the population variance returned by ``np.var``.
+    """
     return float(np.var(measured_data))
 
 
 def welford_update(mean, variance, observation_count, new_observation):
-    """Apply a one-step Welford update to the running mean and population variance."""
+    """Apply the one-step Welford update to mean and population variance S^2.
+
+    Parameters
+    ----------
+    mean : float or array-like
+        Current running mean.
+    variance : float or array-like
+        Current empirical population variance S^2.
+    observation_count : int
+        Number of observations represented by ``mean`` and ``variance``.
+    new_observation : float or array-like
+        New observation(s) to assimilate.
+
+    Returns
+    -------
+    tuple
+        ``(mean_next, variance_next)`` with variance clipped to be non-negative.
+    """
     mean = np.asarray(mean, dtype=float)
     variance = np.asarray(variance, dtype=float)
     new_observation = np.asarray(new_observation, dtype=float)
@@ -51,6 +73,47 @@ def welford_update(mean, variance, observation_count, new_observation):
         + (new_observation - mean) * (new_observation - mean_next)
     ) / (observation_count + 1)
     return mean_next, np.maximum(variance_next, 0.0)
+
+
+def sigma_map_from_variance(measured_variance, observation_count, alpha, beta):
+    """Return the MAP sigma implied by observation_count and empirical variance.
+
+    This is the stats-based core of std_calc: given n observations and their
+    population variance S^2, maximize the unnormalised posterior over sigma
+    under the current Gamma prior on sigma.
+
+    Parameters
+    ----------
+    measured_variance : float or array-like
+        Population variance S^2 of the observed overlaps.
+    observation_count : int
+        Number of observed overlaps n.
+    alpha : float
+        Shape of gamma distribution.
+    beta : float
+        Scale of gamma distribution.
+
+    Returns
+    -------
+    float or np.ndarray
+        MAP estimate(s) of sigma. Returns a scalar for scalar input and an
+        array matching the input shape otherwise.
+    """
+    variance = np.asarray(measured_variance, dtype=float)
+    variance_flat = np.atleast_1d(variance).ravel()
+    log_kernel = (
+        _sigma_log_prior_term(alpha, beta, observation_count)[:, None]
+        - (observation_count * variance_flat[None, :]) / (2 * _SIGMA_MAP_SEARCH_GRID_SQUARED[:, None])
+    )
+    # OLD tau-prior variant (Gamma prior on precision τ = 1/σ²):
+    # log_kernel = (
+    #     (-observation_count - 2 * alpha) * np.log(sigma)
+    #     - (observation_count * variance_flat[None, :] / 2 + 1 / beta) / sigma**2
+    # )
+    result = _SIGMA_MAP_SEARCH_GRID[np.argmax(log_kernel, axis=0)].reshape(variance.shape)
+    if variance.shape == ():
+        return float(result)
+    return result
 
 
 def std_calc(measured_data, alpha, beta):
@@ -66,7 +129,6 @@ def std_calc(measured_data, alpha, beta):
         shape of gamma distribution
     beta : float
         scale of gamma distribution
-
     Returns
     -------
     std : float
@@ -78,11 +140,7 @@ def std_calc(measured_data, alpha, beta):
     """
     n = len(measured_data)
     measured_variance = s2_calc(measured_data)
-    likelihood_values = _std_prior_term(alpha, beta, n) * np.exp(
-        -measured_variance / (2 * (_STD_VALUES_SQUARED / n))
-    )
-    std = _STD_VALUES[np.argmax(likelihood_values)]
-    return std
+    return sigma_map_from_variance(measured_variance, n, alpha, beta)
 
 
 
@@ -243,7 +301,7 @@ def analytic_plotting(fraction: int, number_of_fractions: int, values: np.ndarra
     Only available for fractions 1 - (number of fractions - 1)
 
     INCOMPATIBLE WITH STAGE A OUTPUT: adaptive_fractionation_core (Stage A, belief-state DP)
-    returns a 5D values array with shape (remaining_fractions, N_dose, N_overlap, N_mu, N_sigma).
+    returns a 5D values array with shape (remaining_fractions, N_dose, N_overlap, N_mu, N_s2).
     This function expects a 3D array with shape (remaining_fractions, volume_space, dose_space)
     from the earlier Stage 0 solver.  Passing a 5D array raises ValueError.
 
