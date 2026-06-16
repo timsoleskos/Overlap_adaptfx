@@ -39,6 +39,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .[test]
 
+      - name: Cache Numba JIT artefacts
+        uses: actions/cache@v4
+        with:
+          path: adaptive_fractionation_overlap/__pycache__
+          key: numba-${{ runner.os }}-${{ hashFiles('adaptive_fractionation_overlap/core_adaptfx.py') }}
+
       - name: Run pytest with coverage
         run: |
           python -m pytest tests/ --cov=adaptive_fractionation_overlap --cov-report=term-missing

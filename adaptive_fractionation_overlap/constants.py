@@ -23,8 +23,6 @@ DEFAULT_BETA = 0.7788684130749829
 
 # Dynamic programming sentinel values
 INFEASIBLE_VALUE = -1_000_000_000_000.0
-OVERDOSE_STATE_OFFSET = 0.05
-DOSE_GRID_EPSILON = 0.01
 
 COHORT_MAX_OVERLAP_CC = 6.5  # 99th percentile overlap in the 58-patient cohort
 PRECOMPUTE_SCAN_STEP_CC = 0.1
