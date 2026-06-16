@@ -63,6 +63,8 @@ from .belief_model import (
 
 
 _INFEASIBILITY_SENTINEL = INFEASIBLE_VALUE  # large negative value that marks infeasible DP states; all uses in this module must reference this constant
+_VALUE_DTYPE = np.float32
+_VALUE_MASK_SENTINEL = np.finfo(_VALUE_DTYPE).min
 # Per-Gy deficit coefficient added on top of the flat sentinel at the terminal fraction.
 # Chosen so that deficit magnitude (up to tens of Gy) changes the value by ~1e6-1e8 -
 # enough to tiebreak between multiple infeasible actions (smaller deficit wins) while
@@ -172,7 +174,7 @@ def _build_dp_context(
     remaining_ptv_dose = prescribed_dose - accumulated_dose
     remaining_fractions = number_of_fractions - fraction_index_today + 1  # includes the current fraction (not yet delivered)
 
-    values  = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_s2))  # V(s): DP Value Function over all future states
+    values  = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_s2), dtype=_VALUE_DTYPE)  # V(s): DP Value Function over all future states
     policies = np.zeros((remaining_fractions - 1, N_dose, N_overlap, N_mu, N_s2), dtype=np.float32)  # π(s): optimal Dose Action for each future state
 
     base = dict(
@@ -191,8 +193,8 @@ def _build_dp_context(
             values[:] = _INFEASIBILITY_SENTINEL
         return dict(**base, values=values, policies=policies, overlap_penalty=None, is_infeasible=True, fixed_dose=max_dose)
 
-    min_float = np.finfo(np.float64).min
-    overlap_penalty = penalty_calc_matrix(action_space, _VOLUME_SPACE, min_dose)  # OAR immediate cost for each (action, overlap) combination; constant across all DP iterations
+    min_float = _VALUE_MASK_SENTINEL
+    overlap_penalty = penalty_calc_matrix(action_space, _VOLUME_SPACE, min_dose).astype(_VALUE_DTYPE, copy=False)  # OAR immediate cost for each (action, overlap) combination; constant across all DP iterations
 
     # Backward sweep over future fractions only (fraction_index_today+1 through number_of_fractions).
     # The current fraction (fraction_index_today) is handled separately in _resolve_current_fraction,
@@ -249,7 +251,7 @@ def _build_dp_context(
             s2_broadcast_idx   = np.arange(N_s2)[None, None, :]    # shape (1, 1, N_s2): broadcasts over dose and mu
             flat_index_base = (dose_broadcast_idx * N_mu * N_s2 + mu_broadcast_idx * N_s2 + s2_broadcast_idx) * len(action_space)  # shape: (N_dose, N_mu, N_s2)
 
-            values_state  = np.empty((N_dose, N_overlap, N_mu, N_s2))  # Value Function for this DP step; will be filled by the Numba kernel
+            values_state  = np.empty((N_dose, N_overlap, N_mu, N_s2), dtype=_VALUE_DTYPE)  # Value Function for this DP step; will be filled by the Numba kernel
             policies_state = np.empty((N_dose, N_overlap, N_mu, N_s2), dtype=np.float32) # Optimal Policy for this DP step; will be filled by the Numba kernel
 
             # For each (dose, overlap, belief) combination, find the action that maximises
@@ -292,8 +294,11 @@ def _build_dp_context(
             # Terminal state value = immediate cost + feasibility penalties.
             # The value is independent of belief (mu, S^2) because at the terminal fraction the
             # dose decision is fully determined by the remaining dose, not the overlap belief.
-            terminal_state_value = (-terminal_oar_penalty + underdose_penalty[:, None] + overdose_penalty[:, None])  # shape: (N_dose, N_overlap)
-            values[i]   = terminal_state_value[:, :, None, None]                                           # broadcast over belief dimensions; shape: (N_dose, N_overlap, N_mu, N_s2)
+            terminal_state_value = np.asarray(
+                -terminal_oar_penalty + underdose_penalty[:, None] + overdose_penalty[:, None],
+                dtype=_VALUE_DTYPE,
+            )  # shape: (N_dose, N_overlap)
+            values[i]   = terminal_state_value[:, :, None, None]                                         # broadcast over belief dimensions; shape: (N_dose, N_overlap, N_mu, N_s2)
             policies[i, :, :, :, :] = best_actions[:, None, None, None]  # broadcast fill — avoids allocating a full float64 temporary
 
     return dict(**base, values=values, policies=policies, overlap_penalty=overlap_penalty, is_infeasible=False, fixed_dose=None)

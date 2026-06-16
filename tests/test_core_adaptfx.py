@@ -122,6 +122,8 @@ class TestAdaptiveFractionationCore:
         assert isinstance(volume_space, np.ndarray), "Volume space should be numpy array"
         assert isinstance(physical_dose, (int, float, np.number)), "Physical dose should be scalar"
         assert isinstance(values, np.ndarray), "Values should be numpy array"
+        assert values.dtype == np.float32, "Value tables should use float32 to reduce DP memory"
+        assert policies.dtype == np.float32, "Policy tables should use float32 to reduce DP memory"
         assert isinstance(dose_space, np.ndarray), "Dose space should be numpy array"
         assert isinstance(probabilities, np.ndarray), "Probabilities should be numpy array"
         
@@ -658,7 +660,7 @@ class TestCoreAdaptfxGoldenRegression:
 
         np.testing.assert_allclose(actual_physical_doses, expected_physical_doses, atol=1e-12)
         np.testing.assert_allclose(actual_penalties_added, expected_penalties_added, atol=1e-12)
-        np.testing.assert_allclose(actual_final_penalties, expected_final_penalties, atol=1e-12)
+        np.testing.assert_allclose(actual_final_penalties, expected_final_penalties, atol=1e-6)
 
 # Performance and edge case tests
 @pytest.mark.unit
