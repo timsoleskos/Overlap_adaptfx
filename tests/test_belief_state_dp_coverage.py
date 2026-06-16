@@ -9,8 +9,9 @@ from adaptive_fractionation_overlap.helper_functions import (
 )
 from adaptive_fractionation_overlap.core_adaptfx import adaptive_fractionation_core, adaptfx_full
 from adaptive_fractionation_overlap.belief_model import (
-    _MU_GRID, _SIGMA_GRID, _VOLUME_SPACE, _P_BELIEF,
-    _hypothetical_belief_grid_indices, _bellman_expectation, _bellman_expectation_full_grid,
+    _MU_GRID, _S2_GRID, _VOLUME_SPACE,
+    _branch_probabilities_for_grid, _hypothetical_belief_grid_indices,
+    _bellman_expectation, _bellman_expectation_full_grid,
 )
 
 
@@ -79,22 +80,26 @@ def test_infeasible_over_prescribed_returns_max_dose():
 
 
 def test_welford_above_mean_increases_mu():
-    mu, sigma = 3.0, 1.0
-    mi, _ = _hypothetical_belief_grid_indices(mu, sigma, np.array([mu + 2.0]), 3)
+    mu, s2 = 3.0, 1.0
+    mi, _ = _hypothetical_belief_grid_indices(mu, s2, np.array([mu + 2.0]), 3)
     assert _MU_GRID[mi[0]] > mu
 
-def test_welford_fewer_observations_give_greater_sigma_reduction():
-    mu, sigma, obs = 3.0, 1.0, np.array([3.0])
-    _, si1  = _hypothetical_belief_grid_indices(mu, sigma, obs, 1)
-    _, si10 = _hypothetical_belief_grid_indices(mu, sigma, obs, 10)
-    assert _SIGMA_GRID[si1[0]] <= _SIGMA_GRID[si10[0]]
+def test_welford_fewer_observations_give_greater_variance_reduction():
+    mu, s2, obs = 3.0, 1.0, np.array([3.0])
+    _, si1  = _hypothetical_belief_grid_indices(mu, s2, obs, 1)
+    _, si10 = _hypothetical_belief_grid_indices(mu, s2, obs, 10)
+    assert _S2_GRID[si1[0]] <= _S2_GRID[si10[0]]
 
 def test_bellman_single_matches_full_grid_slice():
-    values = np.random.default_rng(42).random((3, len(_VOLUME_SPACE), len(_MU_GRID), len(_SIGMA_GRID)))
-    full = _bellman_expectation_full_grid(values, observation_count=2)
+    values = np.random.default_rng(42).random((3, len(_VOLUME_SPACE), len(_MU_GRID), len(_S2_GRID)))
+    full = _bellman_expectation_full_grid(
+        values, observation_count=2, alpha=DEFAULT_ALPHA, beta=DEFAULT_BETA
+    )
     mi, si = 50, 3
-    single = _bellman_expectation(values, _VOLUME_SPACE, _P_BELIEF[mi, si],
-                                  _MU_GRID[mi], _SIGMA_GRID[si], observation_count=2)
+    p_branch = _branch_probabilities_for_grid(2, DEFAULT_ALPHA, DEFAULT_BETA)[mi, si]
+    single = _bellman_expectation(
+        values, _VOLUME_SPACE, p_branch, _MU_GRID[mi], _S2_GRID[si], observation_count=2
+    )
     np.testing.assert_allclose(full[:, mi, si], single, rtol=1e-5)
 
 def test_adaptfx_full_total_penalty_consistency():
